@@ -5,8 +5,9 @@
 #include <cuda_runtime_api.h>
 #include <cuda_runtime.h>
 #include <iostream>
+#include <functional>
 
-__global__ void matMul(const half* const a_ptr,
+__global__ void tcMatMul(const half* const a_ptr,
                        const half* const b_ptr,
                        half* const c_ptr){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::col_major> a_frag;
@@ -25,6 +26,40 @@ __global__ void matMul(const half* const a_ptr,
     }
 }
 
+__global__ void cuMatMul(const half* const a_ptr,
+                       const half* const b_ptr,
+                       half* const c_ptr){
+    // cの一行目はbの1行…となるように計算
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    for(size_t _i = 0; _i < 1'000'000'0; _i++){
+        for(size_t i = 0; i < 16; i++){
+            c_ptr[i * 16 + idx] = b_ptr[i * 16 + idx] + half(4);
+        }
+    }
+}
+
+float measureKernel(std::function<void(void)> fn){
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+
+    fn();
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    return milliseconds;
+}
+
 int main(int argc, char** argv){
     half *a;
     cudaMalloc((void**)  &a, 16 * 16 );
@@ -33,23 +68,14 @@ int main(int argc, char** argv){
     half *c;
     cudaMalloc((void**)  &c, 16 * 16 );
 
-    dim3 grid(1);
-    dim3 block(1);
-
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    cudaEventRecord(start);
-
-    matMul<<<grid, block>>>(a, b, c);
-
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-
-    float milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    std::cout << "Time: " << milliseconds << " ms" << std::endl;
+    float ms = measureKernel([a, b, c](){
+        tcMatMul<<<4, 4>>>(a, b, c);
+    });
+    std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
+    ms = measureKernel([a, b, c](){
+        cuMatMul<<<1, 16>>>(a, b, c);
+    });
+    std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
 
     return 0;
 }

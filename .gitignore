@@ -45,7 +45,7 @@
 
 # build directory
 build
-
+cmake-build-debug
 
 # idea
 .idea
