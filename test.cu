@@ -34,7 +34,7 @@ __global__ void cuMatMul(const half* const a_ptr,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     for(size_t i = 0; i < 16; i++){
-        c_ptr[i * 16 + idx] = b_ptr[i * 16 + idx] + half(4);
+        c_ptr[i * 16 + idx] = b_ptr[i * 16 + idx];
     }
 
 }
@@ -94,19 +94,17 @@ int main(int argc, char** argv){
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
 
     cudaMemcpy(c_ar.data(), c, 256 * sizeof(half), cudaMemcpyDeviceToHost);
-    std::cout << "C: " << __half2float(c_ar.at(0)) << std::endl;
-    std::cout << "C: " << __half2float(c_ar.at(1)) << std::endl;
-    std::cout << "C: " << __half2float(c_ar.at(2)) << std::endl;
-    std::cout << "C: " << __half2float(c_ar.at(3)) << std::endl;
-    std::cout << "C: " << __half2float(c_ar.at(4)) << std::endl;
-    assert(c_ar.at(255) == half(1) && "what");
+    assert(c_ar.at(34) == half(1) && "what");
 
-    return 0;
+    c_ar.fill(0); // clear
 
     ms = measureKernel([a, b, c](){
-        cuMatMul<<<1, 1>>>(a, b, c);
+        cuMatMul<<<1, 16>>>(a, b, c);
     });
     std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
+    cudaMemcpy(c_ar.data(), c, 256 * sizeof(half), cudaMemcpyDeviceToHost);
+    assert(c_ar.at(0) == half(1) && "what");
+    assert(c_ar.at(17) == half(1) && "what");
 
     return 0;
 }
