@@ -8,6 +8,7 @@
 #include <functional>
 #include <array>
 #include <cassert>
+#include <set>
 
 __global__ void tcMatMul(const signed char* const a,
                        const signed char* const b,
@@ -64,6 +65,16 @@ float measureKernel(std::function<void(void)> fn){
     return milliseconds;
 }
 
+void make_matrix_from_arr(std::array<std::set<size_t>, 16> &arr, std::array<char, 256> &a){
+    a.fill(0);
+
+    for(size_t row = 0; row < 16; row++){
+        for(auto &e : arr[row]){
+            a[row * 16 + e] = 1;
+        }
+    }
+}
+
 void make_binary(std::array<char, 256> &a){
     a.fill(0);
 
@@ -84,35 +95,42 @@ void make_I(std::array<char, 256> &b){
 }
 
 int main(int argc, char** argv){
-    char *a; cudaMalloc((void**)  &a, sizeof(char) * 16 * 16 );
-    std::array<char, 256> a_ar; make_binary(a_ar);
-    cudaMemcpy(a, a_ar.data(), 256 * sizeof(char), cudaMemcpyHostToDevice);
+    std::array<std::set<size_t>, 16> sparse;
+    for(size_t i = 0; i < 16; i++){
+        sparse[i] = {0, 1, 14, 15};
+    }
+    std::array<char, 256> sparse_matrix;
+    make_matrix_from_arr(sparse, sparse_matrix);
 
-    char *b; cudaMalloc((void**)  &b, sizeof(char) * 16 * 16 );
+    char *a_d; cudaMalloc((void**)  &a_d, sizeof(char) * 16 * 16 );
+    cudaMemcpy(a_d, sparse_matrix.data(), 256 * sizeof(char), cudaMemcpyHostToDevice);
+
+
+    char *b_d; cudaMalloc((void**)  &b_d, sizeof(char) * 16 * 16 );
     std::array<char, 256> b_ar; make_I(b_ar);
-    cudaMemcpy(b, b_ar.data(), 256 * sizeof(char), cudaMemcpyHostToDevice);
+    cudaMemcpy(b_d, b_ar.data(), 256 * sizeof(char), cudaMemcpyHostToDevice);
 
-    int *c; cudaMalloc((void**)  &c, sizeof(int) * 16 * 16 ); cudaMemset(c, 0, sizeof(int) * 16 * 16);
+    int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * 16 * 16 ); cudaMemset(c_d, 0, sizeof(int) * 16 * 16);
     std::array<int, 256> c_ar;
 
-    float ms = measureKernel([a, b, c](){
+    float ms = measureKernel([a_d, b_d, c_d](){
         // 32でないとだめ
         for(size_t i = 0; i < 1000; i++){
-            tcMatMul<<<1, 32>>>(( signed char * ) a, ( signed char * )  b, c);
+            tcMatMul<<<1, 32>>>(( signed char * ) a_d, ( signed char * )  b_d, c_d);
         }
     });
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
 
-    cudaMemcpy(c_ar.data(), c, 256 * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(c_ar.data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar.at(0) == 1 && "what");
 
-    ms = measureKernel([a, b, c](){
+    ms = measureKernel([a_d, b_d, c_d](){
         for(size_t i = 0; i < 1000; i++){
-            cuMatMul<<<1, 16>>>( a, b, c);
+            cuMatMul<<<1, 16>>>( a_d, b_d, c_d);
         }
     });
     std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
-    cudaMemcpy(c_ar.data(), c, 256 * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(c_ar.data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar.at(0) == 1 && "what");
     assert(c_ar.at(17) == 1 && "what");
 
