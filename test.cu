@@ -11,34 +11,39 @@
 #include <set>
 
 
-#define M 32 * 4
+#define M 32
 #define K 32
-#define N 32768 * 4
+#define N 32768 * 8
 #define ITER_NUM 1
 
-__device__ signed char W_mat[M * K]; // 4GB
+__device__ signed char W_mat[M * K];
 // TODO X map should support dynamic length
 // I just fill this matrix with index num
-__device__ unsigned short W_map[M * (K / 4)]; // 2GB
+__device__ unsigned short W_map[(K / 4) * M];
 
 
 /**
  * Prepare both W_mat and W_map before the measurement.
  */
 __global__ void prepareW(){
-    memset(W_map, 0, sizeof(W_map));
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    for(size_t row = 0; row < M; row++){
-        for(size_t col = 0; col < (K / 4); col++){
-            W_map[row * (K / 4) + col] = col;
-        }
+    if(tid >= M){
+        // this thread won't work for init
+        return;
     }
 
-    memset(W_mat, 0, sizeof (W_mat));
+    int row = tid;
 
-    for(size_t row = 0; row < M; row++){
-        for(size_t col = 0; col < (K/4); col++){
+    for(size_t col = 0; col < (K / 4); col++){
+        W_map[row * (K / 4) + col] = col;
+    }
+
+    for(size_t col = 0; col < K; col++){
+        if(col < (K / 4)){
             W_mat[row * K + col] = 1;
+        }else{
+            W_mat[row * K + col] = 0;
         }
     }
 }
@@ -95,8 +100,18 @@ float measureKernel(std::function<void(void)> fn){
     return milliseconds;
 }
 
-void make_I(std::array<char, K * N> *X){
+void make_J(std::array<char, K * N> *X){
     X->fill(1);
+}
+
+void make_I(std::array<char, K * N> *X){
+    for(size_t row = 0; row < K; row++){
+        for(size_t col = 0; col < N; col++){
+            if(row == col) {
+                X->at(row * N + col) = 1;
+            }
+        }
+    }
 }
 
 /**
@@ -117,10 +132,9 @@ int main(int argc, char** argv){
     cudaMemcpy(X_d, X_ar->data(), K * N * sizeof(char), cudaMemcpyHostToDevice);
 
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
-    auto c_ar = new std::array<int, M * N>();
+    auto c_ar = new std::array<int, N * 1>(); // store only first row
 
-    //prepareW<<<1, 1>>>();
-    // TODO: parallel init
+    prepareW<<< M / 32, 32>>>();
 
     std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << std::endl;
 
@@ -131,18 +145,18 @@ int main(int argc, char** argv){
     });
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
 
-    cudaMemcpy(c_ar->data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what");
+    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+    assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
 
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
+            // TODO: support more efficient thread run method
             cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
         }
     });
     std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what");
-    //assert(c_ar->at(17) == 1 && "what");
+    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+    assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
 
     return 0;
 }
