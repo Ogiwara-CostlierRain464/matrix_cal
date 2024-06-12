@@ -14,7 +14,7 @@
 #define M 16
 #define K 16
 #define N 32768 * 8
-#define ITER_NUM 1
+#define ITER_NUM 100
 
 __device__ signed char W_mat[M * K];
 // TODO X map should support dynamic length
@@ -65,9 +65,7 @@ __global__ void tcMatMul(const signed char* const X,
     nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
 }
 
-__global__ void cuMatMul(const char* const X,
-                       int* const c){
-
+__global__ void cuMatMul(const char* const X, int* const c){
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     for(size_t row = 0; row < M; row++){
@@ -76,6 +74,30 @@ __global__ void cuMatMul(const char* const X,
             accum += X[ W_map[row * (K/4) + i] * N + col ];
         }
         c[row * N + col] = accum;
+
+        /**
+         * col = 0, row = 1の時: c[1 * N + 0] => c[N] , c[2N], c[3N], c[4N] …と、飛び飛び？　
+         * col = 1, row = 1の時: c[1 * N + 1] => c[N+1], c[2N+1], …と、飛び飛び？
+         * 二つのスレッドはなるべく別々にアクセスした方がいい
+         * cをcolumn ordeにするとどうだろうか？
+         */
+    }
+}
+
+// cをcolumn orderで管理する
+__global__ void cuMatMulCol(const char* const X, int* const c){
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    for(size_t row = 0; row < M; row++){
+        int accum = 0;
+        for(size_t i = 0; i < (K/4); i++){
+            accum += X[ W_map[row * (K/4) + i] * N + col ];
+        }
+        c[col * M + row] = accum;
+
+        /**
+         * col = 0, row = 0, 1, 2, 3の時: c[0 * N + 0] => c[0] , c[1], c[2], c[3] …と隣接
+         */
     }
 }
 
@@ -139,7 +161,7 @@ int main(int argc, char** argv){
     prepareW<<< M / 16, 16>>>();
     cudaDeviceSynchronize();
 
-    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << std::endl;
+    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << std::endl;
 
     float ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
@@ -158,6 +180,16 @@ int main(int argc, char** argv){
         }
     });
     std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
+    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
+    assert(c_ar->at(0) == K / 4 && "what");
+
+    ms = measureKernel([X_d, c_d](){
+        for(size_t i = 0; i < ITER_NUM; i++){
+            cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_d);
+        }
+    });
+    std::cout << "CU Column Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == K / 4 && "what");
