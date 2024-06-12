@@ -11,8 +11,8 @@
 #include <set>
 
 
-#define M 32
-#define K 32
+#define M 16
+#define K 16
 #define N 32768 * 8
 #define ITER_NUM 1
 
@@ -128,13 +128,13 @@ int main(int argc, char** argv){
 
     char *X_d;
     cudaMalloc((void**)  &X_d, sizeof(char) * K * N );
-    auto *X_ar = new std::array<char, K * N>(); make_I(X_ar);
+    auto *X_ar = new std::array<char, K * N>(); make_J(X_ar);
     cudaMemcpy(X_d, X_ar->data(), K * N * sizeof(char), cudaMemcpyHostToDevice);
 
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
     auto c_ar = new std::array<int, N * 1>(); // store only first row
 
-    prepareW<<< M / 32, 32>>>();
+    prepareW<<< M / 16, 16>>>();
 
     std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << std::endl;
 
@@ -146,7 +146,8 @@ int main(int argc, char** argv){
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
 
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
+    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
+    assert(c_ar->at(0) == K / 4 && "what");
 
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
@@ -156,7 +157,8 @@ int main(int argc, char** argv){
     });
     std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
+    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
+    assert(c_ar->at(0) == K / 4 && "what");
 
     return 0;
 }
