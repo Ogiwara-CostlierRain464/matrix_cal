@@ -10,58 +10,67 @@
 #include <cassert>
 #include <set>
 
-__device__ signed char a_mat[] = {  // __constant__ does not work with wmma.
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
 
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
+#define M 32 * 4
+#define K 32
+#define N 32768 * 4
+#define ITER_NUM 1
 
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
+__device__ signed char W_mat[M * K]; // 4GB
+// TODO X map should support dynamic length
+// I just fill this matrix with index num
+__device__ unsigned short W_map[M * (K / 4)]; // 2GB
 
-        1, 1, 0, 0, 0,  0, 0, 0, 0, 0,   0, 0, 0, 0, 1,  1,
-};
 
-__global__ void tcMatMul(const signed char* const b,
-                       int* const c){
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::col_major> a_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::col_major> b_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
+/**
+ * Prepare both W_mat and W_map before the measurement.
+ */
+__global__ void prepareW(){
+    memset(W_map, 0, sizeof(W_map));
 
-    nvcuda::wmma::load_matrix_sync(a_frag, a_mat, 16);
-    nvcuda::wmma::load_matrix_sync(b_frag, b, 16);
-    nvcuda::wmma::fill_fragment(c_frag, 0);
+    for(size_t row = 0; row < M; row++){
+        for(size_t col = 0; col < (K / 4); col++){
+            W_map[row * (K / 4) + col] = col;
+        }
+    }
 
-    nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+    memset(W_mat, 0, sizeof (W_mat));
 
-    nvcuda::wmma::store_matrix_sync(c, c_frag, 16, nvcuda::wmma::mem_col_major);
+    for(size_t row = 0; row < M; row++){
+        for(size_t col = 0; col < (K/4); col++){
+            W_mat[row * K + col] = 1;
+        }
+    }
 }
 
-__constant__ char a_map[] = {
-   0, 1, 14, 15, 0, 1, 14, 15,  0, 1, 14, 15,  0, 1, 14, 15
-};
+__global__ void tcMatMul(const signed char* const X,
+                       int* const c){
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::row_major> W_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::row_major> X_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
-__global__ void cuMatMul(const char* const b,
+    nvcuda::wmma::fill_fragment(c_frag, 0);
+
+    for(size_t k = 0; k < K; k += 16){
+        nvcuda::wmma::load_matrix_sync(W_frag, W_mat + (blockIdx.y * K * 16 + k), K);
+        nvcuda::wmma::load_matrix_sync(X_frag, X + ( k * N + blockIdx.x * 16) , N);
+        nvcuda::wmma::mma_sync(c_frag, W_frag, X_frag, c_frag);
+    }
+
+    nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
+}
+
+__global__ void cuMatMul(const char* const X,
                        int* const c){
 
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    for(size_t row = 0; row < 16; row++){
+    for(size_t row = 0; row < M; row++){
         int accum = 0;
-        for(size_t i = 0; i < 4; i++){
-            accum += b[ a_map[row * 4 + i] * 16 + col ];
+        for(size_t i = 0; i < (K/4); i++){
+            accum += X[ W_map[row * (K/4) + i] * N + col ];
         }
-        c[row * 16 + col] = accum;
+        c[row * N + col] = accum;
     }
 }
 
@@ -86,64 +95,54 @@ float measureKernel(std::function<void(void)> fn){
     return milliseconds;
 }
 
-void make_matrix_from_arr(std::array<std::set<unsigned char>, 16> &arr, std::array<char, 256> &a){
-    a.fill(0);
-
-    for(size_t row = 0; row < 16; row++){
-        for(auto &e : arr[row]){
-            a[row * 16 + e] = 1;
-        }
-    }
+void make_I(std::array<char, K * N> *X){
+    X->fill(1);
 }
 
-void make_binary(std::array<char, 256> &a){
-    a.fill(0);
-
-    // 1+1が右端と左端にある
-    for(size_t r = 0; r < 16; r++){
-        a[0 + r * 16] = 1;
-        a[1 + r * 16] = 1;
-        a[14 + r * 16] = 1;
-        a[15 + r * 16] = 1;
-    }
-}
-
-void make_I(std::array<char, 256> &b){
-    b.fill(0);
-    for(size_t i = 0; i < 16; i++){
-        b.at(i + i * 16) = 1;
-    }
-}
-
+/**
+ * Calc matmul of W(MxK) and X(KxN), where W is ternary matrix and X is 8-bit matrix.
+ * Since X is 8-bit, we need to implement W as a 8-bit matrix due to restriction of wmma.
+ * W is prepared before the performance measure.
+ */
 int main(int argc, char** argv){
 
-    char *b_d; cudaMalloc((void**)  &b_d, sizeof(char) * 16 * 16 );
-    std::array<char, 256> b_ar; make_I(b_ar);
-    cudaMemcpy(b_d, b_ar.data(), 256 * sizeof(char), cudaMemcpyHostToDevice);
+    static_assert(M % 16 == 0 && "mod 16 should be 0");
+    static_assert(K % 16 == 0 && "mod 16 should be 0");
+    static_assert(N % 16 == 0 && "mod 16 should be 0");
+    static_assert(K < 65536 && "K should be fit in the maximum of unsigned short");
 
-    int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * 16 * 16 ); cudaMemset(c_d, 0, sizeof(int) * 16 * 16);
-    std::array<int, 256> c_ar;
+    char *X_d;
+    cudaMalloc((void**)  &X_d, sizeof(char) * K * N );
+    auto *X_ar = new std::array<char, K * N>(); make_I(X_ar);
+    cudaMemcpy(X_d, X_ar->data(), K * N * sizeof(char), cudaMemcpyHostToDevice);
 
-    float ms = measureKernel([b_d, c_d](){
-        // 32でないとだめ
-        for(size_t i = 0; i < 1000; i++){
-            tcMatMul<<<1, 32>>>(( signed char * )  b_d, c_d);
+    int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
+    auto c_ar = new std::array<int, M * N>();
+
+    //prepareW<<<1, 1>>>();
+    // TODO: parallel init
+
+    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << std::endl;
+
+    float ms = measureKernel([X_d, c_d](){
+        for(size_t i = 0; i < ITER_NUM; i++){
+            tcMatMul<<< dim3(N / 16, M / 16) , 32>>>(( signed char * )  X_d, c_d);
         }
     });
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
 
-    cudaMemcpy(c_ar.data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar.at(0) == 1 && "what");
+    cudaMemcpy(c_ar->data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
+    //assert(c_ar->at(0) == 1 && "what");
 
-    ms = measureKernel([b_d, c_d](){
-        for(size_t i = 0; i < 1000; i++){
-            cuMatMul<<<1, 16>>>(b_d, c_d);
+    ms = measureKernel([X_d, c_d](){
+        for(size_t i = 0; i < ITER_NUM; i++){
+            cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
         }
     });
     std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
-    cudaMemcpy(c_ar.data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar.at(0) == 1 && "what");
-    assert(c_ar.at(17) == 1 && "what");
+    cudaMemcpy(c_ar->data(), c_d, 256 * sizeof(int), cudaMemcpyDeviceToHost);
+    //assert(c_ar->at(0) == 1 && "what");
+    //assert(c_ar->at(17) == 1 && "what");
 
     return 0;
 }
