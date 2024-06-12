@@ -137,6 +137,7 @@ int main(int argc, char** argv){
     auto c_ar = new std::array<int, N * 1>(); // store only first row
 
     prepareW<<< M / 16, 16>>>();
+    cudaDeviceSynchronize();
 
     std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << std::endl;
 
