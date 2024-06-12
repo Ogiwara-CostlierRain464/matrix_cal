@@ -88,6 +88,8 @@ float measureKernel(std::function<void(void)> fn){
 
     fn();
 
+    cudaDeviceSynchronize();
+
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 
@@ -144,7 +146,6 @@ int main(int argc, char** argv){
         }
     });
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
-
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == K / 4 && "what");
