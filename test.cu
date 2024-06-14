@@ -16,14 +16,18 @@
 #define N 32768 * 8
 #define ITER_NUM 1000
 #define THREAD_BLOCK_SIZE 32
+#define W_MAP_WIDTH K / 4
+
+// for H100 256K bytes
+#define SHARED_MEM_SIZE 256000
 
 #define BEGIN_ITER for(size_t i = 0; i < ITER_NUM; i++){
 #define END_ITER   }
 
-__device__ signed char W_mat[M * K];
+__device__ signed char W_mat[M * K]; // row major
 // TODO X map should support dynamic length
 // I just fill this matrix with index num
-__device__ unsigned short W_map[(K / 4) * M];
+__device__ unsigned short W_map[W_MAP_WIDTH * M]; // row major
 
 
 
@@ -53,11 +57,16 @@ __global__ void prepareW(){
     }
 }
 
+
+
 __global__ void tcMatMul(const signed char* const X,
                        int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::row_major> W_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::row_major> X_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
+
+    // thread blockあたり用意してあげる
+    //__shared__ signed char[];
 
     BEGIN_ITER
 
@@ -83,7 +92,6 @@ __device__ char (* copyToShared(const char* const X_g))[THREAD_BLOCK_SIZE]
      *
      */
      __shared__ char X_s[K][THREAD_BLOCK_SIZE];
-    static_assert((K * THREAD_BLOCK_SIZE + M * THREAD_BLOCK_SIZE) <= 256000);
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -102,14 +110,25 @@ __global__ void cuMatMul(const char* const X, int* const c){
     int local_tid = threadIdx.x;
 
     char (*X_s)[THREAD_BLOCK_SIZE] = copyToShared(X);
+    __shared__ short W_map_s[M][W_MAP_WIDTH];
+
+    for(size_t row = 0; row < M; row++){
+        for(size_t col = 0; col < W_MAP_WIDTH; col++){
+            // Just copy
+            W_map_s[row][col] = W_map[row * W_MAP_WIDTH + col];
+        }
+    }
+
     __shared__ char c_s[M][THREAD_BLOCK_SIZE];
+
+    static_assert(K * THREAD_BLOCK_SIZE + M * W_MAP_WIDTH + M * THREAD_BLOCK_SIZE <= SHARED_MEM_SIZE);
 
     BEGIN_ITER
 
     for(size_t row = 0; row < M; row++){
         int accum = 0;
         for(size_t i = 0; i < (K/4); i++){
-            accum += X_s[W_map[row * (K/4) + i]][local_tid];
+            accum += X_s[W_map_s[row][i]][local_tid];
         }
         c_s[row][local_tid] = accum;
         //c[row * N + col] = accum;
