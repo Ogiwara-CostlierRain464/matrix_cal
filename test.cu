@@ -85,7 +85,7 @@ __global__ void cuMatMul(const char* const X, int* const c){
 }
 
 // cをcolumn orderで管理する
-__global__ void cuMatMulCol(const char* const X, int* const c){
+__global__ void cuMatMulCol(const char* const X, int *c){
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     for(size_t row = 0; row < M; row++){
@@ -93,10 +93,15 @@ __global__ void cuMatMulCol(const char* const X, int* const c){
         for(size_t i = 0; i < (K/4); i++){
             accum += X[ W_map[row * (K/4) + i] * N + col ];
         }
-        c[col * M + row] = accum;
-
+        c[col * (M+1) + row] = accum;
         /**
-         * col = 0, row = 0, 1, 2, 3の時: c[0 * N + 0] => c[0] , c[1], c[2], c[3] …と隣接
+         * col = 0, row = 0, 1, 2, 3の時: c[0 * (M+1) + 0] => c[0] , c[1], c[2], c[3] …と隣接
+         * col = 1, row = 0, 1, 2, 3の時: c[1 * (M+1) + 0] => c[M+1], c[M+2], c[M+3], c[M+4]…と隣接
+         * col = 2, row = 0, 1, 2, 3の時: c[2 * (M+1) + 0] => c[2M+2], c[2M+3], c[2M+4], c[2M+5]…と隣接
+         * 
+         * TODO: shared memoryに移動
+         *
+         * https://toropippi.livedoor.blog/archives/55467682.html
          */
     }
 }
@@ -158,6 +163,8 @@ int main(int argc, char** argv){
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
     auto c_ar = new std::array<int, N * 1>(); // store only first row
 
+    int *c_with_bank_d; cudaMalloc((void**)  &c_with_bank_d, sizeof(int) * N * (M+1) ); cudaMemset(c_with_bank_d, 0, sizeof(int) * N * (M+1));
+
     prepareW<<< M / 16, 16>>>();
     cudaDeviceSynchronize();
 
@@ -184,13 +191,13 @@ int main(int argc, char** argv){
     //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == K / 4 && "what");
 
-    ms = measureKernel([X_d, c_d](){
+    ms = measureKernel([X_d, c_with_bank_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_d);
+            cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_with_bank_d);
         }
     });
     std::cout << "CU Column Time: " << ms << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(c_ar->data(), c_with_bank_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == K / 4 && "what");
 
