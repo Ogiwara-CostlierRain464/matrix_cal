@@ -14,7 +14,7 @@
 #define M 16
 #define K 16
 #define N 32768 * 8
-#define ITER_NUM 100
+#define ITER_NUM 1000
 #define THREAD_BLOCK_SIZE 32
 
 #define BEGIN_ITER for(size_t i = 0; i < ITER_NUM; i++){
@@ -97,13 +97,14 @@ __device__ char (* copyToShared(const char* const X_g))[THREAD_BLOCK_SIZE]
 
 __global__ void cuMatMul(const char* const X, int* const c){
 
-    BEGIN_ITER
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int local_tid = threadIdx.x;
 
     char (*X_s)[THREAD_BLOCK_SIZE] = copyToShared(X);
     __shared__ char c_s[M][THREAD_BLOCK_SIZE];
+
+    BEGIN_ITER
 
     for(size_t row = 0; row < M; row++){
         int accum = 0;
@@ -120,12 +121,12 @@ __global__ void cuMatMul(const char* const X, int* const c){
          */
     }
 
+    END_ITER
+
     for(size_t row = 0; row < M; row++){
         c[row * N + tid] = c_s[row][local_tid];
     }
 
-
-    END_ITER
 }
 
 // cをcolumn orderで管理する
