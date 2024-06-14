@@ -15,11 +15,16 @@
 #define K 16
 #define N 32768 * 8
 #define ITER_NUM 100
+#define THREAD_BLOCK_SIZE 32
+
+#define BEGIN_ITER for(size_t i = 0; i < ITER_NUM; i++){
+#define END_ITER   }
 
 __device__ signed char W_mat[M * K];
 // TODO X map should support dynamic length
 // I just fill this matrix with index num
 __device__ unsigned short W_map[(K / 4) * M];
+
 
 
 /**
@@ -54,6 +59,8 @@ __global__ void tcMatMul(const signed char* const X,
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::row_major> X_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
+    BEGIN_ITER
+
     nvcuda::wmma::fill_fragment(c_frag, 0);
 
     for(size_t k = 0; k < K; k += 16){
@@ -63,29 +70,69 @@ __global__ void tcMatMul(const signed char* const X,
     }
 
     nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
+
+    END_ITER
+}
+
+__device__ char (* copyToShared(const char* const X_g))[THREAD_BLOCK_SIZE]
+{
+    /**
+     * A100のshared memoryは164KB
+     * H100のshared memoryは256KB
+     * 0番目のスレッドがアクセスするのは、X行列の0列
+     *
+     */
+     __shared__ char X_s[K][THREAD_BLOCK_SIZE];
+    static_assert((K * THREAD_BLOCK_SIZE + M * THREAD_BLOCK_SIZE) <= 256000);
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    for(size_t row = 0; row < K; row++){
+        for(size_t col = 0; col < THREAD_BLOCK_SIZE; col++){
+            X_s[row][col] = X_g[row * N + tid];
+        }
+    }
+    return X_s;
 }
 
 __global__ void cuMatMul(const char* const X, int* const c){
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    BEGIN_ITER
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int local_tid = threadIdx.x;
+
+    char (*X_s)[THREAD_BLOCK_SIZE] = copyToShared(X);
+    __shared__ char c_s[M][THREAD_BLOCK_SIZE];
 
     for(size_t row = 0; row < M; row++){
         int accum = 0;
         for(size_t i = 0; i < (K/4); i++){
-            accum += X[ W_map[row * (K/4) + i] * N + col ];
+            accum += X_s[W_map[row * (K/4) + i]][local_tid];
         }
-        c[row * N + col] = accum;
+        c_s[row][local_tid] = accum;
+        //c[row * N + col] = accum;
 
         /**
          * col = 0, row = 1の時: c[1 * N + 0] => c[N] , c[2N], c[3N], c[4N] …と、飛び飛び？　
          * col = 1, row = 1の時: c[1 * N + 1] => c[N+1], c[2N+1], …と、飛び飛び？
-         * 二つのスレッドはなるべく別々にアクセスした方がいい
-         * cをcolumn ordeにするとどうだろうか？
+         * だが、メモリの性質はうまく利用している？
          */
     }
+
+    for(size_t row = 0; row < M; row++){
+        c[row * N + tid] = c_s[row][local_tid];
+    }
+
+
+    END_ITER
 }
 
 // cをcolumn orderで管理する
 __global__ void cuMatMulCol(const char* const X, int *c){
+
+    BEGIN_ITER
+
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     for(size_t row = 0; row < M; row++){
@@ -98,12 +145,14 @@ __global__ void cuMatMulCol(const char* const X, int *c){
          * col = 0, row = 0, 1, 2, 3の時: c[0 * (M+1) + 0] => c[0] , c[1], c[2], c[3] …と隣接
          * col = 1, row = 0, 1, 2, 3の時: c[1 * (M+1) + 0] => c[M+1], c[M+2], c[M+3], c[M+4]…と隣接
          * col = 2, row = 0, 1, 2, 3の時: c[2 * (M+1) + 0] => c[2M+2], c[2M+3], c[2M+4], c[2M+5]…と隣接
-         * 
+         *
          * TODO: shared memoryに移動
          *
          * https://toropippi.livedoor.blog/archives/55467682.html
          */
     }
+
+    END_ITER
 }
 
 float measureKernel(std::function<void(void)> fn){
@@ -155,6 +204,7 @@ int main(int argc, char** argv){
     static_assert(N % 16 == 0 && "mod 16 should be 0");
     static_assert(K < 65536 && "K should be fit in the maximum of unsigned short");
 
+    // row major
     char *X_d;
     cudaMalloc((void**)  &X_d, sizeof(char) * K * N );
     auto *X_ar = new std::array<char, K * N>(); make_J(X_ar);
@@ -171,34 +221,24 @@ int main(int argc, char** argv){
     std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << std::endl;
 
     float ms = measureKernel([X_d, c_d](){
-        for(size_t i = 0; i < ITER_NUM; i++){
-            tcMatMul<<< dim3(N / 16, M / 16) , 32>>>(( signed char * )  X_d, c_d);
-        }
+        tcMatMul<<< dim3(N / 16, M / 16) , 32>>>(( signed char * )  X_d, c_d);
     });
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == K / 4 && "what");
 
     ms = measureKernel([X_d, c_d](){
-        for(size_t i = 0; i < ITER_NUM; i++){
-            // TODO: support more efficient thread run method
-            cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
-        }
+        cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
     });
     std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == K / 4 && "what");
 
     ms = measureKernel([X_d, c_with_bank_d](){
-        for(size_t i = 0; i < ITER_NUM; i++){
-            cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_with_bank_d);
-        }
+        cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_with_bank_d);
     });
     std::cout << "CU Column Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_with_bank_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == K / 4 && "what");
 
     return 0;
