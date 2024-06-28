@@ -10,15 +10,112 @@
 #include <cassert>
 #include <set>
 
+using namespace nvcuda;
+
+#ifndef CPU_DEBUG
+#define CPU_DEBUG 0
+#endif
+
+#ifndef SHARED_MEMORY_LIMIT_64K
+// A100などのデバイスではすでにこの制限はないが、簡単のため
+#define SHARED_MEMORY_LIMIT_64K 1
+#endif
+
+#define WARP_SIZE 32
 
 #define M 16
 #define K 16
-#define N 32768 * 8
+#define N 16
+
+#define M_TILES 256
+#define K_TILES 256
+#define N_TILES 256
+
+#define M_GLOBAL (M * M_TILES)
+#define K_GLOBAL (K * K_TILES)
+#define N_GLOBAL (N * N_TILES)
+
+// とりあえず、256 thread per blocで比較する
+#define WARPS_PER_BLOCK 8
+#define THREADS_PER_BLOCK (WARP_SIZE * WARPS_PER_BLOCK)
+
+#if SHARED_MEMORY_LIMIT_64K
+#define CHUNK_K 8
+#else
+// ここはもっとでかくできる
+#define CHUNK_K 16
+#endif
+
+#define CHUNK_LINE_BYTES (CHUNK_K * K * sizeof(uint8_t))
+#define WARP_COPY_BYTES (WARP_SIZE * sizeof(int4))
+#define CHUNK_COPY_LINES_PER_WARP (WARP_COPY_BYTES / CHUNK_LINE_BYTES)
+#define CHUNK_COPY_LINE_LANES (WARP_SIZE / CHUNK_COPY_LINES_PER_WARP)
+
+#define BLOCK_ROW_WARPS 2
+#define BLOCK_COL_WARPS 4
+
+#define WARP_ROW_TILES 4
+#define WARP_COL_TILES 2
+
+#define BLOCK_ROW_TILES (WARP_ROW_TILES * BLOCK_ROW_WARPS)
+#define BLOCK_COL_TILES (WARP_COL_TILES * BLOCK_COL_WARPS)
+
+#define GLOBAL_MEM_STRIDE N_GLOBAL
+
+#define SHMEM_STRIDE (N * BLOCK_ROW_TILES)
+#define SHMEM_OFFSET (N * WARP_ROW_TILES)
+
+#define SKEW_UINT8 32
+
+#define checkKernelErrors(expr)                             \
+  do {                                                      \
+    expr;                                                   \
+                                                            \
+    cudaError_t __err = cudaGetLastError();                 \
+    if (__err != cudaSuccess) {                             \
+      printf("Line %d: '%s' failed: %s\n", __LINE__, #expr, \
+             cudaGetErrorString(__err));                    \
+      abort();                                              \
+    }                                                       \
+  } while (0)
+
+__host__ void init_host_matrices(uint8_t *a, uint8_t *b) {
+    for (int i = 0; i < M_GLOBAL; i++) {
+        for (int j = 0; j < K_GLOBAL; j++) {
+            a[i * K_GLOBAL + j] = (uint8_t)(rand() % 3);
+        }
+    }
+
+    for (int i = 0; i < N_GLOBAL; i++) {
+        for (int j = 0; j < K_GLOBAL; j++) {
+            b[i * K_GLOBAL + j] = (uint8_t)(rand() % 3); // col major
+        }
+    }
+}
+
+__host__ void init_host_matrices(uint8_t *a, uint8_t *b, int *c) {
+    for (int i = 0; i < M_GLOBAL; i++) {
+        for (int j = 0; j < K_GLOBAL; j++) {
+            a[i * K_GLOBAL + j] = (uint8_t)(rand() % 3);
+        }
+    }
+
+    for (int i = 0; i < N_GLOBAL; i++) {
+        for (int j = 0; j < K_GLOBAL; j++) {
+            b[i * K_GLOBAL + j] = (uint8_t)(rand() % 3); // col major
+        }
+    }
+
+    for (int t = 0; t < M_GLOBAL * N_GLOBAL; t++) {
+        c[t] = (rand() % 3);
+    }
+}
+
 #define ITER_NUM 1000
 #define THREAD_BLOCK_SIZE 32
 #define W_MAP_WIDTH K / 4
 
-// for H100 256K bytes
+// Shared memory size: A100 has 164KiB, H100 has 256KiB
 #define SHARED_MEM_SIZE 256000
 
 #define BEGIN_ITER for(size_t i = 0; i < ITER_NUM; i++){
@@ -62,19 +159,27 @@ __global__ void prepareW(){
 __global__ void tcMatMul(const signed char* const X,
                        int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::row_major> W_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::row_major> X_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::col_major> X_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
-    // thread blockあたり用意してあげる
-    //__shared__ signed char[];
+    /**
+     * X, W, c: 必要分
+     */
+    __shared__ __align__(128) signed char W_s[K / 16][16];
+    __shared__ signed char X_s[K / 16][16];
+
+    for(size_t k = 0; k < K; k += 16){
+        memcpy(W_s[k], W_mat + blockIdx.y * K * 16 + k, 16);
+        memcpy(X_s[k], X + k * N + blockIdx.x * 16, 16);
+    }
 
     BEGIN_ITER
 
     nvcuda::wmma::fill_fragment(c_frag, 0);
 
     for(size_t k = 0; k < K; k += 16){
-        nvcuda::wmma::load_matrix_sync(W_frag, W_mat + (blockIdx.y * K * 16 + k), K);
-        nvcuda::wmma::load_matrix_sync(X_frag, X + ( k * N + blockIdx.x * 16) , N);
+        nvcuda::wmma::load_matrix_sync(W_frag, W_s[k], K);
+        nvcuda::wmma::load_matrix_sync(X_frag, X_s[k] , N);
         nvcuda::wmma::mma_sync(c_frag, W_frag, X_frag, c_frag);
     }
 
