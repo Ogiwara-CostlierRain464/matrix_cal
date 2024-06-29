@@ -18,6 +18,8 @@
 
 #define W_MAP_LENGTH (K / 2)
 
+#define CALC_M_LENGTH (16L)
+
 __device__ signed char W_mat[M * K];
 // TODO X map should support dynamic length
 // I just fill this matrix with index num
@@ -86,6 +88,29 @@ __global__ void cuMatMul(const char* const X, int* const c){
     }
 }
 
+// <<< N * M /  CALC_M_LENGTH / 32, 32  >>>
+__global__ void cuMatMul2(const char* const X, int* const c){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int start_row = (tid / N) * CALC_M_LENGTH;
+    int col = tid % N;
+
+    for(size_t row = start_row; row < start_row + CALC_M_LENGTH; row++){
+        int accum = 0;
+        for(size_t i = 0; i < W_MAP_LENGTH; i++){
+            accum += X[ W_map[row * W_MAP_LENGTH + i] * N + col ];
+        }
+        c[row * N + col] = accum;
+
+        /**
+         * col = 0, row = 1の時: c[1 * N + 0] => c[N] , c[2N], c[3N], c[4N] …と、飛び飛び？　
+         * col = 1, row = 1の時: c[1 * N + 1] => c[N+1], c[2N+1], …と、飛び飛び？
+         * 二つのスレッドはなるべく別々にアクセスした方がいい
+         * cをcolumn ordeにするとどうだろうか？
+         */
+    }
+}
+
 // cをcolumn orderで管理する
 __global__ void cuMatMulCol(const char* const X, int* const c){
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -99,6 +124,9 @@ __global__ void cuMatMulCol(const char* const X, int* const c){
 
         /**
          * col = 0, row = 0, 1, 2, 3の時: c[0 * N + 0] => c[0] , c[1], c[2], c[3] …と隣接
+         * col = 1, row = 0, 1, 2, 3の時: c[1 * ]
+         *
+         * global memoryの場合は、そもそもbank conflictとか関係がないが…
          */
     }
 }
@@ -177,7 +205,6 @@ int main(int argc, char** argv){
 
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            // TODO: support more efficient thread run method
             cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
         }
     });
