@@ -104,6 +104,8 @@ __global__ void cuMatMul2(const char* const X, int* const c){
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
             accum += X[W_map[row * W_MAP_LENGTH + i]];
         }
+        // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
+        // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
             accum += -X[W_map_negative[row * W_MAP_LENGTH + i]];
