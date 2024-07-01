@@ -11,10 +11,10 @@
 #include <set>
 
 
-#define M 12288L
-#define K 12288L
+#define M 2560L
+#define K 2560L
 #define N (M * 4L)
-#define ITER_NUM 1
+#define ITER_NUM 10000
 
 #define W_MAP_LENGTH (K / 8)
 
