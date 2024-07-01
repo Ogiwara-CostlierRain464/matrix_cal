@@ -11,12 +11,12 @@
 #include <set>
 
 
-#define M 1024L
-#define K 1024L
-#define N 4096L
-#define ITER_NUM 100
+#define M 12288L
+#define K 12288L
+#define N (M * 4L)
+#define ITER_NUM 1
 
-#define W_MAP_LENGTH (K / 5)
+#define W_MAP_LENGTH (K / 8)
 
 #define CALC_M_LENGTH (8L)
 
@@ -204,11 +204,11 @@ int main(int argc, char** argv){
     prepareW<<< M / 16, 16>>>();
     cudaDeviceSynchronize();
 
-    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << " W_MAP_LENGTH=" << W_MAP_LENGTH << std::endl;
+    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << " W_MAP_LENGTH=" << W_MAP_LENGTH << " CALC_M_LENGTH=" << CALC_M_LENGTH << std::endl;
 
     float ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            tcMatMul<<< dim3(N / 16, M / 16) , 32>>>(( signed char * )  X_d, c_d);
+            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>(( signed char * )  X_d, c_d)));
         }
     });
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
@@ -218,7 +218,7 @@ int main(int argc, char** argv){
 
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            cuMatMul2<<< N * M / (CALC_M_LENGTH * 32), 32 >>>(X_d, c_d);
+            checkKernelErrors((cuMatMul2<<< N * M / (CALC_M_LENGTH * 32), 32 >>>(X_d, c_d)));
         }
     });
     std::cout << "CudaCore2 Time: " << ms << "ms" << std::endl;
