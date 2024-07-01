@@ -11,20 +11,31 @@
 #include <set>
 
 
-#define M 16L
-#define K 1600L
-#define N 1'600'000L
+#define M 1024L
+#define K 1024L
+#define N 4096L
 #define ITER_NUM 100
 
-#define W_MAP_LENGTH (K / 2)
+#define W_MAP_LENGTH (K / 5)
 
-#define CALC_M_LENGTH (16L)
+#define CALC_M_LENGTH (8L)
 
 __device__ signed char W_mat[M * K];
 // TODO X map should support dynamic length
 // I just fill this matrix with index num
 __device__ unsigned short W_map[W_MAP_LENGTH * M];
 
+#define checkKernelErrors(expr)                             \
+  do {                                                      \
+    expr;                                                   \
+                                                            \
+    cudaError_t __err = cudaGetLastError();                 \
+    if (__err != cudaSuccess) {                             \
+      printf("Line %d: '%s' failed: %s\n", __LINE__, #expr, \
+             cudaGetErrorString(__err));                    \
+      abort();                                              \
+    }                                                       \
+  } while (0)
 
 /**
  * Prepare both W_mat and W_map before the measurement.
@@ -95,8 +106,10 @@ __global__ void cuMatMul2(const char* const X, int* const c){
     int start_row = (tid / N) * CALC_M_LENGTH;
     int col = tid % N;
 
+#pragma unroll
     for(size_t row = start_row; row < start_row + CALC_M_LENGTH; row++){
         int accum = 0;
+#pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
             accum += X[ W_map[row * W_MAP_LENGTH + i] * N + col ];
         }
@@ -205,23 +218,34 @@ int main(int argc, char** argv){
 
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
+            cuMatMul2<<< N * M / (CALC_M_LENGTH * 32), 32 >>>(X_d, c_d);
         }
     });
-    std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
+    std::cout << "CudaCore2 Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
     assert(c_ar->at(0) == W_MAP_LENGTH && "what");
 
-    ms = measureKernel([X_d, c_d](){
-        for(size_t i = 0; i < ITER_NUM; i++){
-            cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_d);
-        }
-    });
-    std::cout << "CU Column Time: " << ms << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
-    assert(c_ar->at(0) == W_MAP_LENGTH && "what");
+//    ms = measureKernel([X_d, c_d](){
+//        for(size_t i = 0; i < ITER_NUM; i++){
+//            cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
+//        }
+//    });
+//    std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
+//    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+//    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
+//    assert(c_ar->at(0) == W_MAP_LENGTH && "what");
+
+//    ms = measureKernel([X_d, c_d](){
+//        for(size_t i = 0; i < ITER_NUM; i++){
+//            cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_d);
+//        }
+//    });
+//    std::cout << "CU Column Time: " << ms << "ms" << std::endl;
+//    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+//    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
+//    assert(c_ar->at(0) == W_MAP_LENGTH && "what");
+
+
 
     return 0;
 }
