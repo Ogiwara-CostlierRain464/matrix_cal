@@ -14,16 +14,17 @@
 #define M 2560L
 #define K 2560L
 #define N (M * 4L)
-#define ITER_NUM 10000
+#define ITER_NUM 100
 
-#define W_MAP_LENGTH (K / 8)
+#define W_MAP_LENGTH (K / 16)
 
 #define CALC_M_LENGTH (8L)
 
 __device__ signed char W_mat[M * K];
 // TODO X map should support dynamic length
 // I just fill this matrix with index num
-__device__ unsigned short W_map[W_MAP_LENGTH * M];
+__device__ short W_map[W_MAP_LENGTH * M];
+__device__ short W_map_negative[W_MAP_LENGTH * M];
 
 #define checkKernelErrors(expr)                             \
   do {                                                      \
@@ -53,10 +54,15 @@ __global__ void prepareW(){
     for(size_t col = 0; col < W_MAP_LENGTH; col++){
         W_map[row * W_MAP_LENGTH + col] = col;
     }
+    for(size_t col = 0; col < W_MAP_LENGTH; col++){
+        W_map_negative[row * W_MAP_LENGTH + col] = col;
+    }
 
     for(size_t col = 0; col < K; col++){
-        if(col < W_MAP_LENGTH){
+        if(col < W_MAP_LENGTH / 2){
             W_mat[row * K + col] = 1;
+        }else if((W_MAP_LENGTH / 2) <= col && col <  W_MAP_LENGTH){
+            W_mat[row * K + col] = -1;
         }else{
             W_mat[row * K + col] = 0;
         }
@@ -80,23 +86,8 @@ __global__ void tcMatMul(const signed char* const X,
     nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
 }
 
-__global__ void cuMatMul(const char* const X, int* const c){
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    for(size_t row = 0; row < M; row++){
-        int accum = 0;
-        for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            accum += X[ W_map[row * W_MAP_LENGTH + i] * N + col ];
-        }
-        c[row * N + col] = accum;
-
-        /**
-         * col = 0, row = 1の時: c[1 * N + 0] => c[N] , c[2N], c[3N], c[4N] …と、飛び飛び？　
-         * col = 1, row = 1の時: c[1 * N + 1] => c[N+1], c[2N+1], …と、飛び飛び？
-         * 二つのスレッドはなるべく別々にアクセスした方がいい
-         * cをcolumn ordeにするとどうだろうか？
-         */
-    }
+__device__ __forceinline__ short make_sign(short x){
+    return  (2 * (short)(x > 0) - 1);
 }
 
 // <<< N * M /  CALC_M_LENGTH / 32, 32  >>>
@@ -111,38 +102,16 @@ __global__ void cuMatMul2(const char* const X, int* const c){
         int accum = 0;
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            accum += X[ W_map[row * W_MAP_LENGTH + i] * N + col ];
+            accum += X[W_map[row * W_MAP_LENGTH + i]];
+        }
+#pragma unroll
+        for(size_t i = 0; i < W_MAP_LENGTH; i++){
+            accum += -X[W_map_negative[row * W_MAP_LENGTH + i]];
         }
         c[row * N + col] = accum;
-
-        /**
-         * col = 0, row = 1の時: c[1 * N + 0] => c[N] , c[2N], c[3N], c[4N] …と、飛び飛び？　
-         * col = 1, row = 1の時: c[1 * N + 1] => c[N+1], c[2N+1], …と、飛び飛び？
-         * 二つのスレッドはなるべく別々にアクセスした方がいい
-         * cをcolumn ordeにするとどうだろうか？
-         */
     }
 }
 
-// cをcolumn orderで管理する
-__global__ void cuMatMulCol(const char* const X, int* const c){
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    for(size_t row = 0; row < M; row++){
-        int accum = 0;
-        for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            accum += X[ W_map[row * W_MAP_LENGTH + i] * N + col ];
-        }
-        c[col * M + row] = accum;
-
-        /**
-         * col = 0, row = 0, 1, 2, 3の時: c[0 * N + 0] => c[0] , c[1], c[2], c[3] …と隣接
-         * col = 1, row = 0, 1, 2, 3の時: c[1 * ]
-         *
-         * global memoryの場合は、そもそもbank conflictとか関係がないが…
-         */
-    }
-}
 
 float measureKernel(std::function<void(void)> fn){
     cudaEvent_t start, stop;
@@ -191,7 +160,7 @@ int main(int argc, char** argv){
     static_assert(M % 16 == 0 && "mod 16 should be 0");
     static_assert(K % 16 == 0 && "mod 16 should be 0");
     static_assert(N % 16 == 0 && "mod 16 should be 0");
-    static_assert(K < 65536 && "K should be fit in the maximum of unsigned short");
+    static_assert(K < (65536 / 2) && "K should be fit in the maximum of short");
 
     char *X_d;
     cudaMalloc((void**)  &X_d, sizeof(char) * K * N );
@@ -213,8 +182,7 @@ int main(int argc, char** argv){
     });
     std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
-    assert(c_ar->at(0) == W_MAP_LENGTH && "what");
+    assert(c_ar->at(0) == 0 && "what");
 
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
@@ -223,28 +191,7 @@ int main(int argc, char** argv){
     });
     std::cout << "CudaCore2 Time: " << ms << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == W_MAP_LENGTH && "what");
-
-//    ms = measureKernel([X_d, c_d](){
-//        for(size_t i = 0; i < ITER_NUM; i++){
-//            cuMatMul<<<(N / 32) , 32>>>(X_d, c_d);
-//        }
-//    });
-//    std::cout << "CudaCore Time: " << ms << "ms" << std::endl;
-//    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-//    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
-//    assert(c_ar->at(0) == W_MAP_LENGTH && "what");
-
-//    ms = measureKernel([X_d, c_d](){
-//        for(size_t i = 0; i < ITER_NUM; i++){
-//            cuMatMulCol<<<(N / 32) , 32>>>(X_d, c_d);
-//        }
-//    });
-//    std::cout << "CU Column Time: " << ms << "ms" << std::endl;
-//    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-//    //assert(c_ar->at(0) == 1 && "what"); assert(c_ar->at(1) == 1 && "what"); assert(c_ar->at(K / 4) == 0 && "what");
-//    assert(c_ar->at(0) == W_MAP_LENGTH && "what");
-
+    assert(c_ar->at(0) == 0 && "what");
 
 
     return 0;
