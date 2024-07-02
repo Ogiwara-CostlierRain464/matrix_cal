@@ -11,12 +11,12 @@
 #include <set>
 
 
-#define M 2560L
-#define K 2560L
+#define M 12288L
+#define K 12288L
 #define N (M * 4L)
-#define ITER_NUM 100
+#define ITER_NUM 1000
 
-#define W_MAP_LENGTH (K / 16)
+#define W_MAP_LENGTH (K / 12)
 
 #define CALC_M_LENGTH (8L)
 
@@ -59,9 +59,9 @@ __global__ void prepareW(){
     }
 
     for(size_t col = 0; col < K; col++){
-        if(col < W_MAP_LENGTH / 2){
+        if(col < W_MAP_LENGTH){
             W_mat[row * K + col] = 1;
-        }else if((W_MAP_LENGTH / 2) <= col && col <  W_MAP_LENGTH){
+        }else if(W_MAP_LENGTH <= col && col < W_MAP_LENGTH * 2){
             W_mat[row * K + col] = -1;
         }else{
             W_mat[row * K + col] = 0;
@@ -182,7 +182,7 @@ int main(int argc, char** argv){
             checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>(( signed char * )  X_d, c_d)));
         }
     });
-    std::cout << "TensorCore Time: " << ms << "ms" << std::endl;
+    std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
 
@@ -191,7 +191,7 @@ int main(int argc, char** argv){
             checkKernelErrors((cuMatMul2<<< N * M / (CALC_M_LENGTH * 32), 32 >>>(X_d, c_d)));
         }
     });
-    std::cout << "CudaCore2 Time: " << ms << "ms" << std::endl;
+    std::cout << "CudaCore2 Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
 
