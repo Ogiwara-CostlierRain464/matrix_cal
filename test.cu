@@ -16,7 +16,7 @@
 #define N (M * 4L)
 #define ITER_NUM 1000
 
-#define W_MAP_LENGTH (K / 12)
+#define W_MAP_LENGTH (K / 10)
 
 #define CALC_M_LENGTH (8L)
 
