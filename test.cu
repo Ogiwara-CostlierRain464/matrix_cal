@@ -24,9 +24,9 @@
 
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
-#define X_MAJOR MAJOR_ROW
-#define W_MAJOR MAJOR_ROW
-#define C_MAJOR MAJOR_ROW
+#define X_MAJOR MAJOR_COL
+#define W_MAJOR MAJOR_COL
+#define C_MAJOR MAJOR_COL
 
 #define MAKE_GPU_MATRIX_ROW_MAJOR(name, type, row_size, col_size) __device__ type name[row_size][col_size];
 #define MAKE_GPU_MATRIX_COL_MAJOR(name, type, row_size, col_size) __device__ type name[col_size][row_size];
@@ -141,15 +141,13 @@ __global__ void cuMatMul(const char* const X , int* const C){
         int accum = 0;
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            const unsigned short idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
-            accum += BT(X_MAJOR) (X, M, K, row, idx);
+            accum += BT(X_MAJOR) (X, M, K, row, BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col));
         }
         // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
         // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            const unsigned short idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
-            accum += -BT(X_MAJOR) (X, M, K, row, idx);
+            accum += -BT(X_MAJOR) (X, M, K, row, BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col));
         }
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
