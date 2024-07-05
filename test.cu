@@ -12,13 +12,13 @@
 #include <type_traits>
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 2048L
-#define M D_MODEL
+#define D_MODEL 768L
+#define M (D_MODEL * 4)
 #define K D_MODEL
-#define N (D_MODEL * 4)
-#define ITER_NUM 10
+#define N (D_MODEL)
+#define ITER_NUM 1000
 
-#define W_MAP_LENGTH (K / 10)
+#define W_MAP_LENGTH (K / 16)
 
 #define CALC_N_LENGTH (8L)
 
@@ -122,15 +122,14 @@ __global__ void tcMatMul(const signed char* const X,
         nvcuda::wmma::mma_sync(c_frag, X_frag, W_frag, c_frag);
     }
 
-    // ここ、変わる？
     if constexpr(C_MAJOR == MAJOR_ROW){
-        nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
+        nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * 16 * N + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
     }else{
-        nvcuda::wmma::store_matrix_sync(c + (blockIdx.x * M * 16 + blockIdx.y * 16), c_frag, M, nvcuda::wmma::mem_col_major);
+        nvcuda::wmma::store_matrix_sync(c + (blockIdx.x * 16 * M + blockIdx.y * 16), c_frag, M, nvcuda::wmma::mem_col_major);
     }
 }
 
-__global__ void cuMatMul(char *X , int *C){
+__global__ void cuMatMul(const char* const X , int* const C){
     // CUDA内では2配列として使うことはできない。
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -142,15 +141,15 @@ __global__ void cuMatMul(char *X , int *C){
         int accum = 0;
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            unsigned short idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
+            const unsigned short idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
             accum += BT(X_MAJOR) (X, M, K, row, idx);
         }
         // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
         // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            unsigned short idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
-            accum -= BT(X_MAJOR) (X, M, K, row, idx);
+            const unsigned short idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
+            accum += -BT(X_MAJOR) (X, M, K, row, idx);
         }
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
@@ -191,7 +190,7 @@ int main(int argc, char** argv){
     auto *X_ar = new std::array<char, M * K>(); make_J(X_ar);
     cudaMemcpy(X_d, X_ar->data(), sizeof(char) * M * K, cudaMemcpyHostToDevice);
 
-    int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * K * N ); cudaMemset(c_d, 0, sizeof(int) * K * N);
+    int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
     auto c_ar = new std::array<int, N * 1>(); // store only first row
 
     prepareW<<< N / 16, 16>>>();
