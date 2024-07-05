@@ -16,7 +16,7 @@
 #define M D_MODEL
 #define K D_MODEL
 #define N (D_MODEL * 4)
-#define ITER_NUM 1000
+#define ITER_NUM 10
 
 #define W_MAP_LENGTH (K / 10)
 
@@ -25,30 +25,11 @@
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
 #define X_MAJOR MAJOR_ROW
-#define W_MAJOR MAJOR_COL
-#define C_MAJOR MAJOR_COL
-
-// when x major is row major
-#if !(X_MAJOR)
-#define X_TYPE char[M][K]
-#else // col major
-#define X_TYPE char[K][M]
-#endif
+#define W_MAJOR MAJOR_ROW
+#define C_MAJOR MAJOR_ROW
 
 #define MAKE_GPU_MATRIX_ROW_MAJOR(name, type, row_size, col_size) __device__ type name[row_size][col_size];
 #define MAKE_GPU_MATRIX_COL_MAJOR(name, type, row_size, col_size) __device__ type name[col_size][row_size];
-
-// when c major is row major
-#if !(C_MAJOR)
-#define C_TYPE int[M][N]
-#define _C_DIM(M, N) [M][N]
-#define C_DIM _C_DIM(M, N)
-#else // col major
-#define C_TYPE int[N][M]
-#define _C_DIM(N, M) [N][M]
-#define C_DIM _C_DIM(N, M)
-#endif
-
 
 #define CAT(x, y) x ## y
 
@@ -114,37 +95,43 @@ __global__ void prepareW(){
     }
 }
 
-
+/**
+ * ここはroとcol orderで固定にする良さそう
+ */
 __global__ void tcMatMul(const signed char* const X,
                        int* const c){
-
-#if X_MAJOR == MAJOR_ROW
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::row_major> X_frag;
-#else
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::col_major> X_frag;
-#endif
-#if W_MAJOR == MAJOR_ROW
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::row_major> W_frag;
-#else
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::col_major> W_frag;
-#endif
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> W_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
     nvcuda::wmma::fill_fragment(c_frag, 0);
 
 #pragma unroll
     for(size_t k = 0; k < K; k += 16){
-        nvcuda::wmma::load_matrix_sync(X_frag, X + (blockIdx.y * K * 16 + k), X_MAJOR == MAJOR_ROW ? K : M);
-        nvcuda::wmma::load_matrix_sync(W_frag, X + ( k * N + blockIdx.x * 16), W_MAJOR == MAJOR_ROW ? N : K);
+        if constexpr(X_MAJOR == MAJOR_ROW){
+            nvcuda::wmma::load_matrix_sync(X_frag, X + (blockIdx.y * K * 16 + k), K);
+        }else{
+            nvcuda::wmma::load_matrix_sync(X_frag, X + (k * M + blockIdx.y * 16), M);
+        }
+
+        if constexpr(W_MAJOR == MAJOR_ROW){
+            nvcuda::wmma::load_matrix_sync(W_frag, W_mat + ( k * N + blockIdx.x * 16), N);
+        }else{
+            nvcuda::wmma::load_matrix_sync(W_frag, W_mat + ( k + blockIdx.x * 16 * K), K);
+        }
         nvcuda::wmma::mma_sync(c_frag, X_frag, W_frag, c_frag);
     }
 
     // ここ、変わる？
-    nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, C_MAJOR == MAJOR_ROW ? nvcuda::wmma::mem_row_major : nvcuda::wmma::mem_col_major );
+    if constexpr(C_MAJOR == MAJOR_ROW){
+        nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
+    }else{
+        nvcuda::wmma::store_matrix_sync(c + (blockIdx.x * M * 16 + blockIdx.y * 16), c_frag, M, nvcuda::wmma::mem_col_major);
+    }
 }
 
 __global__ void cuMatMul(char *X , int *C){
-    // CUDA内は2配列として使うことはできない。
+    // CUDA内では2配列として使うことはできない。
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     int start_col = (tid / M) * CALC_N_LENGTH;
@@ -162,8 +149,8 @@ __global__ void cuMatMul(char *X , int *C){
         // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            unsigned short idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
-            accum += BT(X_MAJOR) (X, M, K, row, idx);
+            unsigned short idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
+            accum -= BT(X_MAJOR) (X, M, K, row, idx);
         }
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
@@ -200,11 +187,11 @@ int main(int argc, char** argv){
     static_assert(K < 65536 && "K should be fit in the maximum of short");
 
     char *X_d;
-    cudaMalloc((void**) &X_d, sizeof(X_TYPE));
+    cudaMalloc((void**) &X_d, sizeof(char) * M * K);
     auto *X_ar = new std::array<char, M * K>(); make_J(X_ar);
-    cudaMemcpy(X_d, X_ar->data(), sizeof(X_TYPE), cudaMemcpyHostToDevice);
+    cudaMemcpy(X_d, X_ar->data(), sizeof(char) * M * K, cudaMemcpyHostToDevice);
 
-    int *c_d; cudaMalloc((void**)  &c_d, sizeof(C_TYPE) ); cudaMemset(c_d, 0, sizeof(C_TYPE));
+    int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * K * N ); cudaMemset(c_d, 0, sizeof(int) * K * N);
     auto c_ar = new std::array<int, N * 1>(); // store only first row
 
     prepareW<<< N / 16, 16>>>();
