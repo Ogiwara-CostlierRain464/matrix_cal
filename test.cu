@@ -31,12 +31,8 @@
 // when x major is row major
 #if !(X_MAJOR)
 #define X_TYPE char[M][K]
-#define _X_DIM(M, K) [M][K]
-#define X_DIM _X_DIM(M, K)
 #else // col major
 #define X_TYPE char[K][M]
-#define _X_DIM(K, M) [K][M]
-#define X_DIM _X_DIM(K, M)
 #endif
 
 #define MAKE_GPU_MATRIX_ROW_MAJOR(name, type, row_size, col_size) __device__ type name[row_size][col_size];
@@ -196,11 +192,6 @@ void make_J(std::array<char, M * K> *X){
     X->fill(1);
 }
 
-/**
- * Calc matmul of W(MxK) and X(KxN), where W is ternary matrix and X is 8-bit matrix.
- * Since X is 8-bit, we need to implement W as a 8-bit matrix due to restriction of wmma.
- * W is prepared before the performance measure.
- */
 int main(int argc, char** argv){
 
     static_assert(M % 16 == 0 && "mod 16 should be 0");
