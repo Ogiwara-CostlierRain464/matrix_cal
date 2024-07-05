@@ -28,11 +28,16 @@
 #define W_MAJOR MAJOR_COL
 #define C_MAJOR MAJOR_COL
 
-#define X_TYPE char[M * K];
-
-__device__ char W_mat[K * N];
-__device__ unsigned short W_map[W_MAP_LENGTH * N];
-__device__ 
+// when x major is row major
+#if !(X_MAJOR)
+#define X_TYPE char[M][K]
+#define _X_DIM(M, K) [M][K]
+#define X_DIM _X_DIM(M, K)
+#else // col major
+#define X_TYPE char[K][M]
+#define _X_DIM(K, M) [K][M]
+#define X_DIM _X_DIM(K, M)
+#endif
 
 #define MAKE_GPU_MATRIX_ROW_MAJOR(name, type, row_size, col_size) __device__ type name[row_size][col_size];
 #define MAKE_GPU_MATRIX_COL_MAJOR(name, type, row_size, col_size) __device__ type name[col_size][row_size];
@@ -57,11 +62,18 @@ __device__
 #define AT_1(mat, row, col) mat[col][row]
 #define AT(major) CAT(AT_, major)
 
-MAKE_GPU_MATRIX_COL_MAJOR(W_mat, char, K, N)
+#define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
+#define BT_1(mat, row_dim, col_dim, row, col) mat[col * row_dim + row]
+#define BT(major) CAT(BT_, major)
+
+__device__ signed char W_mat[K * N];
+//MAKE_GPU_MATRIX_COL_MAJOR(W_mat, signed char, K, N)
 // W map should support dynamic length
 // I just fill this matrix with index num
-MAKE_GPU_MATRIX_COL_MAJOR(W_map, unsigned short, W_MAP_LENGTH, N)
-MAKE_GPU_MATRIX_COL_MAJOR(W_map_negative, unsigned short, W_MAP_LENGTH, N)
+__device__ unsigned short W_map[W_MAP_LENGTH * N];
+//MAKE_GPU_MATRIX_COL_MAJOR(W_map, unsigned short, W_MAP_LENGTH, N)
+__device__ unsigned short W_map_negative[W_MAP_LENGTH * N];
+//MAKE_GPU_MATRIX_COL_MAJOR(W_map_negative, unsigned short, W_MAP_LENGTH, N)
 
 #define checkKernelErrors(expr)                             \
   do {                                                      \
@@ -89,44 +101,54 @@ __global__ void prepareW(){
     int col = tid;
 
     for(size_t row = 0; row < W_MAP_LENGTH; row++){
-        AT(W_MAJOR) (W_map, row, col) = row;
+        BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = row;
     }
     for(size_t row = 0; row < W_MAP_LENGTH; row++){
-        AT(W_MAJOR) (W_map_negative, row, col) = row;
+        BT(W_MAJOR) (W_map_negative ,W_MAP_LENGTH ,N, row, col) = row;
     }
 
     for(size_t row = 0; row < K; row++){
         if(row < W_MAP_LENGTH){
-            AT(W_MAJOR) (W_mat, row, col) = 1;
+            BT(W_MAJOR) (W_mat, K, N, row, col) = 1;
         }else if(W_MAP_LENGTH <= row && row < W_MAP_LENGTH * 2){
-            AT(W_MAJOR) (W_mat, row, col) = -1;
+            BT(W_MAJOR) (W_mat, K, N, row, col) = -1;
         }else{
-            AT(W_MAJOR) (W_mat, row, col) = 0;
+            BT(W_MAJOR) (W_mat, K, N, row, col) = 0;
         }
     }
 }
 
 
-__global__ void tcMatMul(char* X,
-                       int* c){
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, char, std::conditional<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>::type > X_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, char, std::conditional<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>::type > W_frag;
+__global__ void tcMatMul(const signed char* const X,
+                       int* const c){
+
+#if X_MAJOR == MAJOR_ROW
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::row_major> X_frag;
+#else
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::col_major> X_frag;
+#endif
+#if W_MAJOR == MAJOR_ROW
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::row_major> W_frag;
+#else
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::col_major> W_frag;
+#endif
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
     nvcuda::wmma::fill_fragment(c_frag, 0);
 
 #pragma unroll
     for(size_t k = 0; k < K; k += 16){
-        nvcuda::wmma::load_matrix_sync(W_frag, W_mat + (blockIdx.y * K * 16 + k), K);
-        nvcuda::wmma::load_matrix_sync(X_frag, X + ( k * N + blockIdx.x * 16) , N);
-        nvcuda::wmma::mma_sync(c_frag, W_frag, X_frag, c_frag);
+        nvcuda::wmma::load_matrix_sync(X_frag, X + (blockIdx.y * K * 16 + k), X_MAJOR == MAJOR_ROW ? K : M);
+        nvcuda::wmma::load_matrix_sync(W_frag, X + ( k * N + blockIdx.x * 16), W_MAJOR == MAJOR_ROW ? N : K);
+        nvcuda::wmma::mma_sync(c_frag, X_frag, W_frag, c_frag);
     }
 
+    // ここ、変わる？
     nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * N * 16 + blockIdx.x * 16), c_frag, N, C_MAJOR == MAJOR_ROW ? nvcuda::wmma::mem_row_major : nvcuda::wmma::mem_col_major );
 }
 
-__global__ void cuMatMul(char *X X_DIM, int *C C_DIM){
-
+__global__ void cuMatMul(char *X , int *C){
+    // CUDA内は2配列として使うことはできない。
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     int start_col = (tid / M) * CALC_N_LENGTH;
@@ -137,17 +159,17 @@ __global__ void cuMatMul(char *X X_DIM, int *C C_DIM){
         int accum = 0;
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            unsigned short idx = AT(W_MAJOR) (W_map, i, col);
-            accum += AT(X_MAJOR) (X, row, idx);
+            unsigned short idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
+            accum += BT(X_MAJOR) (X, M, K, row, idx);
         }
         // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
         // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            unsigned short idx = AT(W_MAJOR) (W_map, i, col);
-            accum += AT(X_MAJOR) (X, row, idx);
+            unsigned short idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
+            accum += BT(X_MAJOR) (X, M, K, row, idx);
         }
-        AT(C_MAJOR) (C, row, col) = accum;
+        BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
 }
 
@@ -201,7 +223,7 @@ int main(int argc, char** argv){
 
     float ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>(X_d, c_d)));
+            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, c_d)));
         }
     });
     std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
@@ -210,7 +232,7 @@ int main(int argc, char** argv){
 
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>( (X_TYPE) X_d, (C_TYPE) c_d)));
+            checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, c_d)));
         }
     });
     std::cout << "CudaCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
