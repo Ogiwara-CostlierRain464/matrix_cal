@@ -12,11 +12,11 @@
 #include <type_traits>
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 768L
-#define M (D_MODEL * 4)
+#define D_MODEL 4096L
+#define M (D_MODEL)
 #define K D_MODEL
-#define N (D_MODEL)
-#define ITER_NUM 1000
+#define N (D_MODEL * 4)
+#define ITER_NUM 100
 
 #define W_MAP_LENGTH (K / 16)
 
@@ -24,12 +24,9 @@
 
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
-#define X_MAJOR MAJOR_COL
+#define X_MAJOR MAJOR_ROW
 #define W_MAJOR MAJOR_COL
 #define C_MAJOR MAJOR_COL
-
-#define MAKE_GPU_MATRIX_ROW_MAJOR(name, type, row_size, col_size) __device__ type name[row_size][col_size];
-#define MAKE_GPU_MATRIX_COL_MAJOR(name, type, row_size, col_size) __device__ type name[col_size][row_size];
 
 #define CAT(x, y) x ## y
 
@@ -141,13 +138,15 @@ __global__ void cuMatMul(const char* const X , int* const C){
         int accum = 0;
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            accum += BT(X_MAJOR) (X, M, K, row, BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col));
+            auto idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
+            accum += BT(X_MAJOR) (X, M, K, row, idx);
         }
         // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
         // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            accum += -BT(X_MAJOR) (X, M, K, row, BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col));
+            auto idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
+            accum += -BT(X_MAJOR) (X, M, K, row, idx);
         }
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
