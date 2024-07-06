@@ -1,11 +1,4 @@
-
-
-
-nvcc -g -G --std=c++11 -gencode=arch=compute_80,code=\"sm_80,compute_80\"  -x cu -c  ../test.cu -o CMakeFiles/test.dir/test.cu.o  && make
-nvcc --std=c++11 -gencode=arch=compute_80,code=\"sm_80,compute_80\"  -x cu -c  -Xptxas -O3,-v  ../test.cu -o CMakeFiles/test.dir/test.cu.o  && make
-
--x cu -c -Xptxas -O3,-v 
-
+docker run -it -v ./:/work  -d --gpus all --name ogi nvidia/cuda:12.5.0-devel-ubuntu20.04 bash
 
 
 /usr/local/cuda/bin/nvcc  --std=c++17 -gencode=arch=compute_86,code=\"sm_86,compute_86\"  -x cu -c -Xptxas -O3,-v  /work/matrix_cal/test.cu -o CMakeFiles/test.dir/test.cu.o  && make

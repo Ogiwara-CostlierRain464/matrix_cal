@@ -11,43 +11,35 @@
 #include <set>
 #include <type_traits>
 
+//#define RUN_TC
+#define RUN_CUDA
+
 // X: MxK  W: KxN  C: MxN
 #define D_MODEL 4096L
 #define M (D_MODEL)
 #define K D_MODEL
 #define N (D_MODEL * 4)
-#define ITER_NUM 100
+#define ITER_NUM 1000
 
-#define W_MAP_LENGTH (K / 16)
+#define W_MAP_LENGTH (K / 20)
 
 #define CALC_N_LENGTH (8L)
 
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
-#define X_MAJOR MAJOR_ROW
+#define X_MAJOR MAJOR_COL
 #define W_MAJOR MAJOR_COL
 #define C_MAJOR MAJOR_COL
 
 #define CAT(x, y) x ## y
-
-// row major
-#define AT_0(mat, row, col) mat[row][col]
-// col major
-#define AT_1(mat, row, col) mat[col][row]
-#define AT(major) CAT(AT_, major)
 
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
 #define BT_1(mat, row_dim, col_dim, row, col) mat[col * row_dim + row]
 #define BT(major) CAT(BT_, major)
 
 __device__ signed char W_mat[K * N];
-//MAKE_GPU_MATRIX_COL_MAJOR(W_mat, signed char, K, N)
-// W map should support dynamic length
-// I just fill this matrix with index num
 __device__ unsigned short W_map[W_MAP_LENGTH * N];
-//MAKE_GPU_MATRIX_COL_MAJOR(W_map, unsigned short, W_MAP_LENGTH, N)
 __device__ unsigned short W_map_negative[W_MAP_LENGTH * N];
-//MAKE_GPU_MATRIX_COL_MAJOR(W_map_negative, unsigned short, W_MAP_LENGTH, N)
 
 #define checkKernelErrors(expr)                             \
   do {                                                      \
@@ -195,7 +187,10 @@ int main(int argc, char** argv){
 
     std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << " W_MAP_LENGTH=" << W_MAP_LENGTH << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
 
-    float ms = measureKernel([X_d, c_d](){
+    float ms = 0;
+
+#ifdef RUN_TC
+    ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
             checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, c_d)));
         }
@@ -203,7 +198,9 @@ int main(int argc, char** argv){
     std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
+#endif
 
+#ifdef RUN_CUDA
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
             checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, c_d)));
@@ -212,7 +209,7 @@ int main(int argc, char** argv){
     std::cout << "CudaCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
-
+#endif
 
     return 0;
 }
