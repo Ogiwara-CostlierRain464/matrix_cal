@@ -21,7 +21,7 @@
 #define N (D_MODEL * 4)
 #define ITER_NUM 1000
 
-#define W_MAP_LENGTH (K / 20)
+#define W_MAP_LENGTH (K / 2000)
 
 #define CALC_N_LENGTH (8L)
 
@@ -144,6 +144,23 @@ __global__ void cuMatMul(const char* const X , int* const C){
     }
 }
 
+__global__ void newMatMul(const char* const X, int* const C){
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 8, 32, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 8, 32, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> W_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 8, 32, 16, int> c_frag;
+
+    nvcuda::wmma::fill_fragment(c_frag, 0);
+
+    int land_id = threadIdx.x; // assert 0 ≤ land_id < 32.
+
+    for(size_t k = 0; k < W_MAP_LENGTH; k++){
+        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + land_id);
+
+        // assert X is col major
+        nvcuda::wmma::load_matrix_sync(X_frag, X + (k * M + blockIdx.y * 16), M);
+    }
+}
+
 
 float measureKernel(std::function<void(void)> fn){
     cudaEvent_t start, stop;
@@ -212,4 +229,8 @@ int main(int argc, char** argv){
 #endif
 
     return 0;
+
+    // TODO 行列積の演算結果が完璧になることを確認
+    // W MA内にランダムにはいち？
+    // Wをコピーするようにした方提案手法がひかる？
 }
