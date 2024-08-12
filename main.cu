@@ -11,7 +11,7 @@
 #include <set>
 #include <type_traits>
 
-//#include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
+#include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
 //#define RUN_TC
 #define RUN_CUDA
@@ -146,22 +146,26 @@ __global__ void cuMatMul(const char* const X , int* const C){
     }
 }
 
-//__global__ void newMatMul(const char* const X, int* const C){
-//    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 8, 32, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
-//    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 8, 32, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> W_frag;
-//    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 8, 32, 16, int> c_frag;
-//
-//    nvcuda::wmma::fill_fragment(c_frag, 0);
-//
-//    int land_id = threadIdx.x; // assert 0 ≤ land_id < 32.
-//
-//    for(size_t k = 0; k < W_MAP_LENGTH; k++){
-//        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + land_id);
-//
-//        // assert X is col major
-//        //nvcuda::wmma::load_matrix_sync(X_frag, X + (k * M + blockIdx.y * 16), M);
-//    }
-//}
+__global__ void newMatMul(const char* const X, int* const C){
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> W_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
+
+    nvcuda::wmma::fill_fragment(c_frag, 0);
+
+    int land_id = mtk::wmma::detail::common::get_lane_id();
+
+    // foreach行列用意、sync_threads
+    // Iを準備
+    // あとは総和
+
+    for(size_t k = 0; k < W_MAP_LENGTH; k++){
+        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + land_id);
+
+        // assert X is col major
+        //nvcuda::wmma::load_matrix_sync(X_frag, X + (k * M + blockIdx.y * 16), M);
+    }
+}
 
 
 float measureKernel(std::function<void(void)> fn){
