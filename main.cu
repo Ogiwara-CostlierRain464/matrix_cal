@@ -18,19 +18,20 @@
 #define RUN_NEW
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 4096L
-#define M (D_MODEL)
+#define D_MODEL 2048L
+#define BATCH_SIZE 32L // for real-time inference
+#define M BATCH_SIZE
 #define K D_MODEL
 #define N (D_MODEL * 4)
-#define ITER_NUM 1000
+#define ITER_NUM 100
 
-#define W_MAP_LENGTH (K / 22)
+#define W_MAP_LENGTH (K / 20)
 
 #define CALC_N_LENGTH (8L)
 
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
-#define X_MAJOR MAJOR_ROW
+#define X_MAJOR MAJOR_COL
 #define W_MAJOR MAJOR_COL
 #define C_MAJOR MAJOR_COL
 
@@ -73,7 +74,7 @@ __global__ void prepareW(){
         BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = row;
     }
     for(size_t row = 0; row < W_MAP_LENGTH; row++){
-        BT(W_MAJOR) (W_map_negative ,W_MAP_LENGTH ,N, row, col) = row;
+        BT(W_MAJOR) (W_map_negative ,W_MAP_LENGTH ,N, row, col) = row + W_MAP_LENGTH;
     }
 
     for(size_t row = 0; row < K; row++){
@@ -149,7 +150,7 @@ __global__ void cuMatMul(const char* const X , int* const C){
 
 __global__ void newMatMul(const signed char* const X, int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> W_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> I_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
     nvcuda::wmma::fill_fragment(c_frag, 0);
@@ -159,16 +160,18 @@ __global__ void newMatMul(const signed char* const X, int* const c){
     for(size_t k = 0; k < W_MAP_LENGTH; k++){
         int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
 
+        mtk::wmma::detail::sm_75::make_identity_matrix(I_frag);
+
         mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
             for(unsigned f = 0; f < fragment_index_count; f++){
                 X_frag.x[frag_index_list[f]] = BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
             }
         });
 
-        mtk::wmma::detail::sm_75::make_identity_matrix(W_frag);
+
         __syncwarp();
 
-        nvcuda::wmma::mma_sync(c_frag, X_frag, W_frag, c_frag);
+        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
 
 
         col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
@@ -180,7 +183,7 @@ __global__ void newMatMul(const signed char* const X, int* const c){
         });
         __syncwarp();
 
-        nvcuda::wmma::mma_sync(c_frag, X_frag, W_frag, c_frag);
+        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
     }
 
     if constexpr(C_MAJOR == MAJOR_ROW){
@@ -244,6 +247,7 @@ int main(int argc, char** argv){
     std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
+    assert(c_ar->at(N - 1) == 0 &&  "what");
 #endif
 
 #ifdef RUN_CUDA
@@ -255,6 +259,7 @@ int main(int argc, char** argv){
     std::cout << "CudaCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
+    assert(c_ar->at(N - 1) == 0 &&  "what");
 #endif
 
 #ifdef RUN_NEW
@@ -265,7 +270,8 @@ int main(int argc, char** argv){
     });
     std::cout << "New Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 0 && "what");
+    assert(c_ar->at(0) == 0 &&  "what");
+    assert(c_ar->at(N - 1) == 0 &&  "what");
 #endif
 
     return 0;

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.11)
 
 project(matrix-cal CUDA)
 
-set(CMAKE_CUDA_ARCHITECTURES 86)
+set(CMAKE_CUDA_ARCHITECTURES 75)
 
 #target_include_directories(main PRIVATE submodule/wmma_extension/include)
 #file(GLOB_RECURSE EXTENSION submodule/wmma_extension/include)
