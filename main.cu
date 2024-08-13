@@ -159,11 +159,21 @@ __global__ void newMatMul(const char* const X, int* const C){
     // Iを準備
     // あとは総和
 
-    for(size_t k = 0; k < W_MAP_LENGTH; k++){
-        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + land_id);
 
-        // assert X is col major
-        //nvcuda::wmma::load_matrix_sync(X_frag, X + (k * M + blockIdx.y * 16), M);
+
+    for(size_t k = 0; k < W_MAP_LENGTH; k++){
+        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
+
+        mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
+            for(unsigned f = 0; f < fragment_index_count; f++){
+                X_frag.x[frag_index_list[f]] = BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
+            }
+        });
+
+        //mkt::wmma::make_identity_matrix<decltype(W_frag)>(W_frag);
+        __syncthreads();
+
+
     }
 }
 
