@@ -13,19 +13,19 @@
 
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
-//#define RUN_TC
-//#define RUN_CUDA
+#define RUN_TC
+#define RUN_CUDA
 #define RUN_NEW
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 2048L
-#define BATCH_SIZE 32L // for real-time inference
+#define D_MODEL 4096L
+#define BATCH_SIZE 4096L // for real-time inference
 #define M BATCH_SIZE
 #define K D_MODEL
 #define N (D_MODEL * 4)
 #define ITER_NUM 100
 
-#define W_MAP_LENGTH (K / 20)
+#define W_MAP_LENGTH (K / 22)
 
 #define CALC_N_LENGTH (8L)
 
