@@ -170,7 +170,7 @@ __global__ void newMatMul(const char* const X, int* const C){
             }
         });
 
-        //mkt::wmma::make_identity_matrix<decltype(W_frag)>(W_frag);
+        mtk::wmma::detail::sm_75::make_identity_matrix(W_frag);
         __syncthreads();
 
 
