@@ -13,8 +13,8 @@
 
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
-#define RUN_TC
-#define RUN_CUDA
+//#define RUN_TC
+//#define RUN_CUDA
 #define RUN_NEW
 
 // X: MxK  W: KxN  C: MxN
@@ -25,7 +25,7 @@
 #define N (D_MODEL * 4)
 #define ITER_NUM 100
 
-#define W_MAP_LENGTH (K / 22)
+#define W_MAP_LENGTH (K / 20)
 
 #define CALC_N_LENGTH (8L)
 
@@ -157,34 +157,47 @@ __global__ void newMatMul(const signed char* const X, int* const c){
 
     int land_id = mtk::wmma::detail::common::get_lane_id();
 
-    for(size_t k = 0; k < W_MAP_LENGTH; k++){
-        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
+//    for(size_t k = 0; k < W_MAP_LENGTH; k++){
+//        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
+//
+//        mtk::wmma::detail::sm_75::make_identity_matrix(I_frag);
+//
+//        mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
+//            for(unsigned f = 0; f < fragment_index_count; f++){
+//                //X_frag.x[frag_index_list[f]] = BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
+//                X_frag.x[frag_index_list[f]] = 1;
+//            }
+//        });
+//
+//        __syncwarp();
+//
+//        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
+//
+//        col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
+//
+//        mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
+//            for(unsigned f = 0; f < fragment_index_count; f++){
+//                //X_frag.x[frag_index_list[f]] = -BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
+//                X_frag.x[frag_index_list[f]] = -1;
+//            }
+//        });
+//        __syncwarp();
+//
+//        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
+//    }
 
-        mtk::wmma::detail::sm_75::make_identity_matrix(I_frag);
+    nvcuda::wmma::fill_fragment(X_frag, 1);
+    nvcuda::wmma::fill_fragment(I_frag, 1);
 
-        mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
-            for(unsigned f = 0; f < fragment_index_count; f++){
-                X_frag.x[frag_index_list[f]] = BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
+    mtk::wmma::foreach_ij<decltype(I_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
+        for(unsigned f = 0; f < fragment_index_count; f++){
+            if(i == j){
+                I_frag.x[frag_index_list[f]] = 1;
             }
-        });
+        }
+    });
 
-
-        __syncwarp();
-
-        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
-
-
-        col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
-
-        mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
-            for(unsigned f = 0; f < fragment_index_count; f++){
-                X_frag.x[frag_index_list[f]] = -BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
-            }
-        });
-        __syncwarp();
-
-        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
-    }
+    nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
 
     if constexpr(C_MAJOR == MAJOR_ROW){
         nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * 16 * N + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
@@ -247,6 +260,7 @@ int main(int argc, char** argv){
     std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
+    assert(c_ar->at(N / 2) == 0 && "what");
     assert(c_ar->at(N - 1) == 0 &&  "what");
 #endif
 
@@ -259,6 +273,7 @@ int main(int argc, char** argv){
     std::cout << "CudaCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
     assert(c_ar->at(0) == 0 && "what");
+    assert(c_ar->at(N / 2) == 0 && "what");
     assert(c_ar->at(N - 1) == 0 &&  "what");
 #endif
 
@@ -270,8 +285,9 @@ int main(int argc, char** argv){
     });
     std::cout << "New Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 0 &&  "what");
-    assert(c_ar->at(N - 1) == 0 &&  "what");
+    assert(c_ar->at(0) == 1 &&  "what");
+    assert(c_ar->at(N / 2) == 0 &&  "what");
+    assert(c_ar->at(N - 2) == 0 &&  "what");
 #endif
 
     return 0;
