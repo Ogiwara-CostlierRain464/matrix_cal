@@ -23,7 +23,7 @@
 #define M BATCH_SIZE
 #define K D_MODEL
 #define N (D_MODEL * 4)
-#define ITER_NUM 100
+#define ITER_NUM 10
 
 #define W_MAP_LENGTH (K / 20)
 
@@ -180,12 +180,11 @@ __device__ void make_map_b(unsigned tid, unsigned *i_map, unsigned *j_map){
 
 
 __global__ void newMatMul(const signed char* const X, int* const c){
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> M_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> I_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
     nvcuda::wmma::fill_fragment(c_frag, 0);
-    nvcuda::wmma::fill_fragment(X_frag, 1);
     nvcuda::wmma::fill_fragment(I_frag, 0);
 
     int land_id = mtk::wmma::detail::common::get_lane_id();
@@ -199,9 +198,31 @@ __global__ void newMatMul(const signed char* const X, int* const c){
             I_frag.x[f] = 1;
         }
     }
-    __syncwarp();
 
-    nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
+    __shared__  signed char M_tmp[16 * 16];
+
+    for(unsigned k = 0; k < W_MAP_LENGTH; k++){
+        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
+
+        for(unsigned i = 0; i < 8; i++){
+            BT(X_MAJOR)(M_tmp, 16, 16, i + (land_id / 16 * 8), land_id % 16)
+            = BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i + (land_id / 16 * 8), col_idx);
+        }
+
+        nvcuda::wmma::load_matrix_sync(M_frag, M_tmp, 16);
+        nvcuda::wmma::mma_sync(c_frag, M_frag, I_frag, c_frag);
+
+        col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
+
+        for(unsigned i = 0; i < 8; i++){
+            BT(X_MAJOR)(M_tmp, 16, 16, i + (land_id / 16 * 8), land_id % 16)
+            = -BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i + (land_id / 16 * 8), col_idx);
+        }
+
+        nvcuda::wmma::load_matrix_sync(M_frag, M_tmp, 16);
+        nvcuda::wmma::mma_sync(c_frag, M_frag, I_frag, c_frag);
+    }
+
 
     if constexpr(C_MAJOR == MAJOR_ROW){
         nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * 16 * N + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
