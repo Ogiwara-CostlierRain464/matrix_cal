@@ -148,54 +148,58 @@ __global__ void cuMatMul(const char* const X , int* const C){
     }
 }
 
+// assert uint8_t, col major, sm80
+__device__ void make_map_a(unsigned tid, unsigned *i_map, unsigned *j_map){
+    auto div_4 = tid / 4;
+    auto mod_4 = tid % 4;
+
+    for(unsigned i = 0; i < 4; i++){
+        i_map[i] = div_4;
+        j_map[i] = mod_4 * 4 + i;
+    }
+    for(unsigned i = 0; i < 4; i++){
+        i_map[i + 4] = div_4 + 8;
+        j_map[i + 4] = mod_4 * 4 + i;
+    }
+}
+
+// assert uint8_t, col major, sm80
+__device__ void make_map_b(unsigned tid, unsigned *i_map, unsigned *j_map){
+    auto div_4 = tid / 4; // 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4
+    auto mod_4 = tid % 4; // 0 1 2 3 0 1 2 3 0 1 2 3
+
+    for(unsigned i = 0; i < 4; i++){
+        i_map[i] = mod_4 * 4 + i;
+        j_map[i] = div_4;
+    }
+    for(unsigned i = 0; i < 4; i++){
+        i_map[i + 4] = mod_4 * 4 + i;
+        j_map[i + 4] = div_4 + 8;
+    }
+}
+
+
 __global__ void newMatMul(const signed char* const X, int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> I_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
 
     nvcuda::wmma::fill_fragment(c_frag, 0);
+    nvcuda::wmma::fill_fragment(X_frag, 1);
+    nvcuda::wmma::fill_fragment(I_frag, 0);
 
     int land_id = mtk::wmma::detail::common::get_lane_id();
 
-//    for(size_t k = 0; k < W_MAP_LENGTH; k++){
-//        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
-//
-//        mtk::wmma::detail::sm_75::make_identity_matrix(I_frag);
-//
-//        mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
-//            for(unsigned f = 0; f < fragment_index_count; f++){
-//                //X_frag.x[frag_index_list[f]] = BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
-//                X_frag.x[frag_index_list[f]] = 1;
-//            }
-//        });
-//
-//        __syncwarp();
-//
-//        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
-//
-//        col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
-//
-//        mtk::wmma::foreach_ij<decltype(X_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
-//            for(unsigned f = 0; f < fragment_index_count; f++){
-//                //X_frag.x[frag_index_list[f]] = -BT(X_MAJOR) (X, M, K,  blockIdx.y * 16 + f , col_idx);
-//                X_frag.x[frag_index_list[f]] = -1;
-//            }
-//        });
-//        __syncwarp();
-//
-//        nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
-//    }
+    unsigned b_i_map[8];
+    unsigned b_j_map[8];
+    make_map_b(land_id, b_i_map, b_j_map);
 
-    nvcuda::wmma::fill_fragment(X_frag, 1);
-    nvcuda::wmma::fill_fragment(I_frag, 1);
-
-    mtk::wmma::foreach_ij<decltype(I_frag)>([&](const unsigned* frag_index_list, const unsigned fragment_index_count, const unsigned i, const unsigned j){
-        for(unsigned f = 0; f < fragment_index_count; f++){
-            if(i == j){
-                I_frag.x[frag_index_list[f]] = 1;
-            }
+    for(unsigned f = 0; f < 8; f++){
+        if(b_i_map[f] == b_j_map[f]){
+            I_frag.x[f] = 1;
         }
-    });
+    }
+    __syncwarp();
 
     nvcuda::wmma::mma_sync(c_frag, X_frag, I_frag, c_frag);
 
