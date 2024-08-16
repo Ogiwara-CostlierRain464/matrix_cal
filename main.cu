@@ -13,8 +13,8 @@
 
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
-//#define RUN_TC
-//#define RUN_CUDA
+#define RUN_TC
+#define RUN_CUDA
 #define RUN_NEW
 
 // X: MxK  W: KxN  C: MxN
@@ -23,9 +23,9 @@
 #define M BATCH_SIZE
 #define K D_MODEL
 #define N (D_MODEL * 4)
-#define ITER_NUM 10
+#define ITER_NUM 100
 
-#define W_MAP_LENGTH (K / 20)
+#define W_MAP_LENGTH (K / 30)
 
 #define CALC_N_LENGTH (8L)
 
@@ -193,6 +193,7 @@ __global__ void newMatMul(const signed char* const X, int* const c){
     unsigned b_j_map[8];
     make_map_b(land_id, b_i_map, b_j_map);
 
+#pragma unroll
     for(unsigned f = 0; f < 8; f++){
         if(b_i_map[f] == b_j_map[f]){
             I_frag.x[f] = 1;
@@ -201,9 +202,11 @@ __global__ void newMatMul(const signed char* const X, int* const c){
 
     __shared__  signed char M_tmp[16 * 16];
 
+#pragma unroll
     for(unsigned k = 0; k < W_MAP_LENGTH; k++){
         int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
 
+#pragma unroll
         for(unsigned i = 0; i < 8; i++){
             BT(X_MAJOR)(M_tmp, 16, 16, i + (land_id / 16 * 8), land_id % 16)
             = BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i + (land_id / 16 * 8), col_idx);
@@ -214,6 +217,7 @@ __global__ void newMatMul(const signed char* const X, int* const c){
 
         col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
 
+#pragma unroll
         for(unsigned i = 0; i < 8; i++){
             BT(X_MAJOR)(M_tmp, 16, 16, i + (land_id / 16 * 8), land_id % 16)
             = -BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i + (land_id / 16 * 8), col_idx);
@@ -310,7 +314,7 @@ int main(int argc, char** argv){
     });
     std::cout << "New Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 1 &&  "what");
+    assert(c_ar->at(0) == 0 &&  "what");
     assert(c_ar->at(N / 2) == 0 &&  "what");
     assert(c_ar->at(N - 2) == 0 &&  "what");
 #endif
