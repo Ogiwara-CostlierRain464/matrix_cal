@@ -258,8 +258,14 @@ __global__ void newMatMul2(const signed char* const X, int* const c){
 
 #pragma unroll
     for(unsigned f = 0; f < 8; f++){
-        if(b_i_map[f] == b_j_map[f]){
-            I_frag.x[f] = 1;
+        if constexpr(W_MAJOR == MAJOR_COL){
+            if(b_i_map[f] == b_j_map[f]){
+                I_frag.x[f] = 1;
+            }
+        }else{
+            f(a_i_map[f] == a_j_map[f]){
+                I_frag.x[f] = 1;
+            }
         }
     }
 
@@ -268,8 +274,14 @@ __global__ void newMatMul2(const signed char* const X, int* const c){
 
 #pragma unroll
         for(unsigned f = 0; f < 8; f++){
-            auto i = a_i_map[f];
-            auto j = a_j_map[f];
+            unsigned i, j;
+            if constexpr(X_MAJOR == MAJOR_COL){
+                i = a_i_map[f];
+                j = a_j_map[f];
+            }else{
+                i = b_i_map[f];
+                j = b_j_map[f];
+            }
             auto col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + j);
             M_frag.x[f] = BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, col_idx);
         }
@@ -279,8 +291,14 @@ __global__ void newMatMul2(const signed char* const X, int* const c){
 
 #pragma unroll
         for(unsigned f = 0; f < 8; f++){
-            auto i = a_i_map[f];
-            auto j = a_j_map[f];
+            unsigned i, j;
+            if constexpr(X_MAJOR == MAJOR_COL){
+                i = a_i_map[f];
+                j = a_j_map[f];
+            }else{
+                i = b_i_map[f];
+                j = b_j_map[f];
+            }
             auto col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + j);
             M_frag.x[f] = -BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, col_idx);
         }
