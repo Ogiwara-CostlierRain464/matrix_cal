@@ -13,22 +13,22 @@
 
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
-#define RUN_TC
+//#define RUN_TC
 #define RUN_CUDA
-#define RUN_NEW
-#define RUN_NEW_2
+//#define RUN_NEW
+//#define RUN_NEW_2
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 4096L
-#define BATCH_SIZE 4096L // for real-time inference
+#define D_MODEL 675084L
+#define BATCH_SIZE 56257L // for real-time inference
 #define M BATCH_SIZE
-#define K D_MODEL
-#define N (D_MODEL * 4)
+#define K (D_MODEL * 4)
+#define N (D_MODEL)
 #define ITER_NUM 100
 
-#define W_MAP_LENGTH (K / 30)
+#define W_MAP_LENGTH (K / 20)
 
-#define CALC_N_LENGTH (8L)
+#define CALC_N_LENGTH (768L)
 
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
@@ -317,7 +317,7 @@ float measureKernel(std::function<void(void)> fn){
 }
 
 void make_J(std::array<char, M * K> *X){
-    X->fill(1);
+    X->fill(114);
 }
 
 int main(int argc, char** argv){

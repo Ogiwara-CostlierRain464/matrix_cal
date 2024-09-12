@@ -54,29 +54,29 @@ __global__ void analyze_fragment(){
     using T = uint8_t;
     //using T = half;
 
-    __shared__ T matrix[32 * 32];
+    __shared__ T matrix[16 * 16];
 
     unsigned i_map[8];
     unsigned j_map[8];
 
     if(0 == threadIdx.x){
-        init_matrix(matrix, 32 * 32);
+        init_matrix(matrix, 16 * 16);
 
-        make_map_b(31, i_map, j_map);
-
-        for(size_t i = 0; i < 8; i++){
-            printf("(%u  %u),", i_map[i], j_map[i]);
-        }
+//        make_map_b(31, i_map, j_map);
+//
+//        for(size_t i = 0; i < 8; i++){
+//            printf("(%u  %u),", i_map[i], j_map[i]);
+//        }
     }
     __syncthreads();
 
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, T, nvcuda::wmma::col_major> a_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, T, nvcuda::wmma::col_major> b_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, T, nvcuda::wmma::row_major> a_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, T, nvcuda::wmma::row_major> b_frag;
 
     nvcuda::wmma::load_matrix_sync(a_frag, matrix, 16);
     nvcuda::wmma::load_matrix_sync(b_frag, matrix, 16);
 
-    for(size_t tid = 0; tid < WARP_SIZE; tid++){
+    for(size_t tid = 0; tid < WARP_SIZE; tid++){ // こうしないとぐちゃぐちゃ
         if(tid == threadIdx.x){
             printf("tid:%d ", threadIdx.x);
 

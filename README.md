@@ -12,6 +12,8 @@ docker run -it -v ./:/work  -d --gpus all --name ogi nvidia/cuda:12.5.0-devel-ub
 /usr/local/cuda/bin/nvcc --std=c++17 -gencode=arch=compute_75,code=\"sm_75,compute_75\"  -x cu  -Xptxas -O3,-v  /work/matrix_cal/main.cu  -o main
 
 
+nsys profile --gpu-metrics-device 0 ./main
+
 cuda-gdb main
 
 set cuda api_failures stop
