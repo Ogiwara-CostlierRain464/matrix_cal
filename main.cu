@@ -14,21 +14,21 @@
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
 //#define RUN_TC
-#define RUN_CUDA
+//#define RUN_CUDA
 //#define RUN_NEW
-//#define RUN_NEW_2
+#define RUN_NEW_2
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 675084L
-#define BATCH_SIZE 56257L // for real-time inference
+#define D_MODEL 12288L
+#define BATCH_SIZE 32L // for real-time inference
 #define M BATCH_SIZE
 #define K (D_MODEL * 4)
 #define N (D_MODEL)
-#define ITER_NUM 100
+#define ITER_NUM 10
 
-#define W_MAP_LENGTH (K / 20)
+#define W_MAP_LENGTH (K / 24)
 
-#define CALC_N_LENGTH (768L)
+#define CALC_N_LENGTH (16L)
 
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
@@ -263,7 +263,7 @@ __global__ void newMatMul2(const signed char* const X, int* const c){
                 I_frag.x[f] = 1;
             }
         }else{
-            f(a_i_map[f] == a_j_map[f]){
+            if(a_i_map[f] == a_j_map[f]){
                 I_frag.x[f] = 1;
             }
         }
@@ -354,7 +354,7 @@ int main(int argc, char** argv){
     auto c_ar = new std::array<int, N * 1>(); // store only first row
 
     prepareW<<< N / 16, 16>>>();
-    cudaDeviceSynchronize();
+    cudaDeviceSynchronize(); // wait for prepareW
 
     std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << " W_MAP_LENGTH=" << W_MAP_LENGTH << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
 
