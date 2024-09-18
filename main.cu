@@ -43,7 +43,7 @@
 #define BT(major) CAT(BT_, major)
 
 __device__ signed char W_mat[K * N];
-__device__ unsigned short W_map[W_MAP_LENGTH * N];
+__device__ signed short W_map[W_MAP_LENGTH * N];
 __device__ unsigned short W_map_negative[W_MAP_LENGTH * N];
 
 #define checkKernelErrors(expr)                             \
@@ -92,8 +92,9 @@ __global__ void prepareW(){
 /**
  * ここはroとcol orderで固定にする良さそう
  */
-__global__ void tcMatMul(const signed char* const X,
-                       int* const c){
+__global__ void tcMatMul(
+        const signed char* const X,
+        int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> W_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
@@ -123,7 +124,19 @@ __global__ void tcMatMul(const signed char* const X,
     }
 }
 
-__global__ void cuMatMul(const char* const X , int* const C){
+// non divergence
+__device__ __forceinline__ char sign(char x){
+    return (x > 0) - (x < 0);
+}
+
+__device__ __forceinline__ char abs(char x){
+    int mask = x >> 7; // get the sign bit: 0 for positive, -1 for negative
+    return (x + mask) ^ mask;
+}
+
+__global__ void cuMatMul(
+        const char* const X,
+        int* const C){
     // CUDA内では2配列として使うことはできない。
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -136,15 +149,13 @@ __global__ void cuMatMul(const char* const X , int* const C){
 #pragma unroll
         for(size_t i = 0; i < W_MAP_LENGTH; i++){
             auto idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
-            accum += BT(X_MAJOR) (X, M, K, row, idx);
+            accum += sign(idx) *  BT(X_MAJOR) (X, M, K, row, abs(idx));
         }
-        // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
-        // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
-#pragma unroll
-        for(size_t i = 0; i < W_MAP_LENGTH; i++){
-            auto idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
-            accum += -BT(X_MAJOR) (X, M, K, row, idx);
-        }
+//#pragma unroll
+//        for(size_t i = 0; i < W_MAP_LENGTH; i++){
+//            auto idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
+//            accum += -BT(X_MAJOR) (X, M, K, row, idx);
+//        }
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
 }
