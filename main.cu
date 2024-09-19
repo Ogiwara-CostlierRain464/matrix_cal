@@ -16,7 +16,7 @@
 //#define RUN_TC
 #define RUN_CUDA
 //#define RUN_NEW
-//#define RUN_NEW_2
+#define RUN_NEW_2
 
 // X: MxK  W: KxN  C: MxN
 #define D_MODEL 32L
@@ -188,63 +188,6 @@ __device__ void make_map_b(unsigned tid, unsigned *i_map, unsigned *j_map){
 }
 
 
-__global__ void newMatMul(const signed char* const X, int* const c){
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> M_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> I_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
-
-    nvcuda::wmma::fill_fragment(c_frag, 0);
-    nvcuda::wmma::fill_fragment(I_frag, 0);
-
-    int land_id = mtk::wmma::detail::common::get_lane_id();
-
-    unsigned b_i_map[8];
-    unsigned b_j_map[8];
-    make_map_b(land_id, b_i_map, b_j_map);
-
-#pragma unroll
-    for(unsigned f = 0; f < 8; f++){
-        if(b_i_map[f] == b_j_map[f]){
-            I_frag.x[f] = 1;
-        }
-    }
-
-    // bank conflict避けたい
-    __shared__  signed char M_tmp[16 * 16];
-
-#pragma unroll
-    for(unsigned k = 0; k < W_MAP_LENGTH; k++){
-        int col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
-
-#pragma unroll
-        for(unsigned i = 0; i < 8; i++){
-            BT(X_MAJOR)(M_tmp, 16, 16, i + (land_id / 16 * 8), land_id % 16)
-            = BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i + (land_id / 16 * 8), col_idx);
-        }
-
-        nvcuda::wmma::load_matrix_sync(M_frag, M_tmp, 16);
-        nvcuda::wmma::mma_sync(c_frag, M_frag, I_frag, c_frag);
-
-        col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + (land_id % 16));
-
-#pragma unroll
-        for(unsigned i = 0; i < 8; i++){
-            BT(X_MAJOR)(M_tmp, 16, 16, i + (land_id / 16 * 8), land_id % 16)
-            = -BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i + (land_id / 16 * 8), col_idx);
-        }
-
-        nvcuda::wmma::load_matrix_sync(M_frag, M_tmp, 16);
-        nvcuda::wmma::mma_sync(c_frag, M_frag, I_frag, c_frag);
-    }
-
-
-    if constexpr(C_MAJOR == MAJOR_ROW){
-        nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * 16 * N + blockIdx.x * 16), c_frag, N, nvcuda::wmma::mem_row_major);
-    }else{
-        nvcuda::wmma::store_matrix_sync(c + (blockIdx.x * 16 * M + blockIdx.y * 16), c_frag, M, nvcuda::wmma::mem_col_major);
-    }
-}
-
 // no use shared memory
 __global__ void newMatMul2(const signed char* const X, int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> M_frag;
@@ -277,9 +220,9 @@ __global__ void newMatMul2(const signed char* const X, int* const c){
         }
     }
 
+    int idx[16];
 #pragma unroll
     for(unsigned k = 0; k < W_MAP_LENGTH; k++){
-
 #pragma unroll
         for(unsigned f = 0; f < 8; f++){
             unsigned i, j;
@@ -290,25 +233,9 @@ __global__ void newMatMul2(const signed char* const X, int* const c){
                 i = b_i_map[f];
                 j = b_j_map[f];
             }
-            auto col_idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + j);
-            M_frag.x[f] = BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, col_idx);
-        }
-        __syncwarp();
-
-        nvcuda::wmma::mma_sync(c_frag, M_frag, I_frag, c_frag);
-
-#pragma unroll
-        for(unsigned f = 0; f < 8; f++){
-            unsigned i, j;
-            if constexpr(X_MAJOR == MAJOR_COL){
-                i = a_i_map[f];
-                j = a_j_map[f];
-            }else{
-                i = b_i_map[f];
-                j = b_j_map[f];
-            }
-            auto col_idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, k, blockIdx.x * 16 + j);
-            M_frag.x[f] = -BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, col_idx);
+            auto col_idx_delta = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + j);
+            idx[j] += col_idx_delta;
+            M_frag.x[f] = sign(col_idx_delta) * BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, idx[j]);
         }
         __syncwarp();
 
@@ -392,19 +319,6 @@ int main(int argc, char** argv){
     assert(c_ar->at(0) == 0 && "what");
     assert(c_ar->at(N / 2) == 0 && "what");
     assert(c_ar->at(N - 1) == 0 &&  "what");
-#endif
-
-#ifdef RUN_NEW
-    ms = measureKernel([X_d, c_d](){
-        for(size_t i = 0; i < ITER_NUM; i++){
-            checkKernelErrors((newMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, c_d)));
-        }
-    });
-    std::cout << "New Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 0 &&  "what");
-    assert(c_ar->at(N / 2) == 0 &&  "what");
-    assert(c_ar->at(N - 2) == 0 &&  "what");
 #endif
 
 #ifdef RUN_NEW_2
