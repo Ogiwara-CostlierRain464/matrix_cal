@@ -43,7 +43,7 @@
 #define BT(major) CAT(BT_, major)
 
 __device__ signed char W_mat[K * N];
-__device__ signed char W_map[W_MAP_LENGTH * N];
+__device__ signed char W_map[W_MAP_LENGTH * N]; // each element can handle -128 ~ 127. Without delta encoding, this limits K up to 128.
 __device__ unsigned short W_map_negative[W_MAP_LENGTH * N];
 
 #define checkKernelErrors(expr)                             \
