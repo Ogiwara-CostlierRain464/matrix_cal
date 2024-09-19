@@ -14,19 +14,19 @@
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
 //#define RUN_TC
-//#define RUN_CUDA
+#define RUN_CUDA
 //#define RUN_NEW
-#define RUN_NEW_2
+//#define RUN_NEW_2
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 12288L
+#define D_MODEL 32L
 #define BATCH_SIZE 32L // for real-time inference
 #define M BATCH_SIZE
 #define K (D_MODEL * 4)
 #define N (D_MODEL)
-#define ITER_NUM 10
+#define ITER_NUM 1000
 
-#define W_MAP_LENGTH (K / 24)
+#define W_MAP_LENGTH (K / 10)
 
 #define CALC_N_LENGTH (16L)
 
@@ -43,7 +43,7 @@
 #define BT(major) CAT(BT_, major)
 
 __device__ signed char W_mat[K * N];
-__device__ signed short W_map[W_MAP_LENGTH * N];
+__device__ signed char W_map[W_MAP_LENGTH * N];
 __device__ unsigned short W_map_negative[W_MAP_LENGTH * N];
 
 #define checkKernelErrors(expr)                             \
@@ -71,17 +71,18 @@ __global__ void prepareW(){
 
     int col = tid;
 
-    for(size_t row = 0; row < W_MAP_LENGTH; row++){
+    for(size_t row = 0; row < W_MAP_LENGTH / 2; row++){
         BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = row;
     }
-    for(size_t row = 0; row < W_MAP_LENGTH; row++){
-        BT(W_MAJOR) (W_map_negative ,W_MAP_LENGTH ,N, row, col) = row + W_MAP_LENGTH;
+    for(size_t row = W_MAP_LENGTH / 2; row < W_MAP_LENGTH; row++){
+        BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = -row;
     }
 
+
     for(size_t row = 0; row < K; row++){
-        if(row < W_MAP_LENGTH){
+        if(row < W_MAP_LENGTH / 2){
             BT(W_MAJOR) (W_mat, K, N, row, col) = 1;
-        }else if(W_MAP_LENGTH <= row && row < W_MAP_LENGTH * 2){
+        }else if(W_MAP_LENGTH / 2 <= row && row < W_MAP_LENGTH ){
             BT(W_MAJOR) (W_mat, K, N, row, col) = -1;
         }else{
             BT(W_MAJOR) (W_mat, K, N, row, col) = 0;
@@ -126,7 +127,9 @@ __global__ void tcMatMul(
 
 // non divergence
 __device__ __forceinline__ char sign(char x){
-    return (x > 0) - (x < 0);
+    //return (x >> 7) | (x != 0); こっちは0の時に0を返してしまう
+    //return (x > 0) - (x < 0); こっちは遅い
+    return 1 | (x >> 7);
 }
 
 __device__ __forceinline__ char abs(char x){
@@ -137,25 +140,21 @@ __device__ __forceinline__ char abs(char x){
 __global__ void cuMatMul(
         const char* const X,
         int* const C){
-    // CUDA内では2配列として使うことはできない。
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     int start_col = (tid / M) * CALC_N_LENGTH;
     int row = tid % M;
 
 #pragma unroll
-    for(size_t col = start_col; col < start_col + CALC_N_LENGTH; col++){
+    for(int col = start_col; col < start_col + CALC_N_LENGTH; col++){ // NOTE: don't use size_t
         int accum = 0;
 #pragma unroll
-        for(size_t i = 0; i < W_MAP_LENGTH; i++){
+        for(int i = 0; i < W_MAP_LENGTH; i++){
             auto idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
+            //assert(abs(idx) >= 0 && "what");
             accum += sign(idx) *  BT(X_MAJOR) (X, M, K, row, abs(idx));
         }
-//#pragma unroll
-//        for(size_t i = 0; i < W_MAP_LENGTH; i++){
-//            auto idx = BT(W_MAJOR) (W_map_negative, W_MAP_LENGTH, N, i, col);
-//            accum += -BT(X_MAJOR) (X, M, K, row, idx);
-//        }
+        //assert(accum == 0);
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
 }
