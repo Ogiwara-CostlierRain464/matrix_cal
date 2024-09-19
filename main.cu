@@ -26,7 +26,8 @@
 #define N (D_MODEL)
 #define ITER_NUM 1000
 
-#define W_MAP_LENGTH (K / 10)
+#define NZ_RATIO 10
+#define W_MAP_LENGTH (K / NZ_RATIO)
 
 #define CALC_N_LENGTH (16L)
 
@@ -71,13 +72,10 @@ __global__ void prepareW(){
 
     int col = tid;
 
-    for(size_t row = 0; row < W_MAP_LENGTH / 2; row++){
-        BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = row;
+    for(int row = 0; row < W_MAP_LENGTH; row++){
+       int sign = row % 2 == 0 ? 1 : -1;
+       BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = sign * NZ_RATIO;
     }
-    for(size_t row = W_MAP_LENGTH / 2; row < W_MAP_LENGTH; row++){
-        BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = -row;
-    }
-
 
     for(size_t row = 0; row < K; row++){
         if(row < W_MAP_LENGTH / 2){
@@ -148,13 +146,13 @@ __global__ void cuMatMul(
 #pragma unroll
     for(int col = start_col; col < start_col + CALC_N_LENGTH; col++){ // NOTE: don't use size_t
         int accum = 0;
+        int idx = 0;
 #pragma unroll
         for(int i = 0; i < W_MAP_LENGTH; i++){
-            auto idx = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
-            //assert(abs(idx) >= 0 && "what");
-            accum += sign(idx) *  BT(X_MAJOR) (X, M, K, row, abs(idx));
+            int idx_delta = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
+            idx += abs(idx_delta);
+            accum += sign(idx_delta) *  BT(X_MAJOR) (X, M, K, row, idx);
         }
-        //assert(accum == 0);
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
 }
@@ -345,7 +343,7 @@ float measureKernel(std::function<void(void)> fn){
 }
 
 void make_J(std::array<char, M * K> *X){
-    X->fill(114);
+    X->fill(1);
 }
 
 int main(int argc, char** argv){
