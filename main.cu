@@ -45,7 +45,6 @@
 
 __device__ signed char W_mat[K * N];
 __device__ signed char W_map[W_MAP_LENGTH * N]; // each element can handle -128 ~ 127. Without delta encoding, this limits K up to 128.
-__device__ unsigned short W_map_negative[W_MAP_LENGTH * N];
 
 #define checkKernelErrors(expr)                             \
   do {                                                      \
@@ -150,7 +149,7 @@ __global__ void cuMatMul(
         for(int i = 0; i < W_MAP_LENGTH; i++){
             int idx_delta = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, i, col);
             idx += abs(idx_delta);
-            accum += sign(idx_delta) *  BT(X_MAJOR) (X, M, K, row, idx);
+            accum += sign(idx_delta) *  BT(X_MAJOR) (X, M, K, row, idx); // delta encoding
         }
         BT(C_MAJOR) (C, M, N, row, col) = accum;
     }
@@ -234,7 +233,7 @@ __global__ void newMatMul2(const signed char* const X, int* const c){
             }
             auto col_idx_delta = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + j);
             idx[j] += col_idx_delta;
-            M_frag.x[f] = sign(col_idx_delta) * BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, idx[j]);
+            M_frag.x[f] = sign(col_idx_delta) * BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, idx[j]); // delta encoding
         }
         __syncwarp();
 
