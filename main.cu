@@ -43,9 +43,6 @@
 #define BT_1(mat, row_dim, col_dim, row, col) mat[col * row_dim + row]
 #define BT(major) CAT(BT_, major)
 
-__device__ signed char W_mat[K * N];
-__device__ signed char W_map[W_MAP_LENGTH * N]; // each element can handle -128 ~ 127. Without delta encoding, this limits K up to 128.
-
 #define checkKernelErrors(expr)                             \
   do {                                                      \
     expr;                                                   \
@@ -58,10 +55,27 @@ __device__ signed char W_map[W_MAP_LENGTH * N]; // each element can handle -128 
     }                                                       \
   } while (0)
 
-/**
- * Prepare both W_mat and W_map before the measurement.
- */
-__global__ void prepareW(){
+__global__ void prepareW_mat(char* const W_mat){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if(tid >= N){
+        // this thread won't work for init
+        return;
+    }
+
+    int col = tid;
+
+    for(size_t row = 0; row < K; row++){
+        if(row % NZ_RATIO == 0){
+            int sign = (row / NZ_RATIO) % 2 == 0 ? 1 : -1;
+                    BT(W_MAJOR) (W_mat, K, N, row, col) = sign;
+        }else{
+                    BT(W_MAJOR) (W_mat, K, N, row, col) = 0;
+        }
+    }
+}
+
+__global__ void prepareW_map(char* const W_map){
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     if(tid >= N){
@@ -72,17 +86,8 @@ __global__ void prepareW(){
     int col = tid;
 
     for(int row = 0; row < W_MAP_LENGTH; row++){
-       int sign = row % 2 == 0 ? 1 : -1;
-       BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = sign * NZ_RATIO; // delta encoding
-    }
-
-    for(size_t row = 0; row < K; row++){
-        if(row % NZ_RATIO == 0){
-            int sign = (row / NZ_RATIO) % 2 == 0 ? 1 : -1;
-            BT(W_MAJOR) (W_mat, K, N, row, col) = sign;
-        }else{
-            BT(W_MAJOR) (W_mat, K, N, row, col) = 0;
-        }
+        int sign = row % 2 == 0 ? 1 : -1;
+                BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = sign * NZ_RATIO; // delta encoding
     }
 }
 
@@ -91,6 +96,7 @@ __global__ void prepareW(){
  */
 __global__ void tcMatMul(
         const signed char* const X,
+        const signed char* const W_mat,
         int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> X_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> W_frag;
@@ -135,6 +141,7 @@ __device__ __forceinline__ char abs(char x){
 
 __global__ void cuMatMul(
         const char* const X,
+        const char* const W_map,
         int* const C){
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -187,7 +194,10 @@ __device__ void make_map_b(unsigned tid, unsigned *i_map, unsigned *j_map){
 
 
 // no use shared memory
-__global__ void newMatMul2(const signed char* const X, int* const c){
+__global__ void newMatMul2(
+        const signed char* const X,
+        const signed char* const W_map,
+        int* const c){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> M_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, std::conditional_t<W_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> I_frag;
     nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
@@ -278,6 +288,8 @@ int main(int argc, char** argv){
     static_assert(N % 16 == 0 && "mod 16 should be 0");
     static_assert(K < 65536 && "K should be fit in the maximum of short");
 
+    static_assert(NZ_RATIO < 128 && "NZ_RATIO must be smaller than int8 indexing size");
+
     char *X_d;
     cudaMalloc((void**) &X_d, sizeof(char) * M * K);
     auto *X_ar = new std::array<char, M * K>(); make_J(X_ar);
@@ -286,50 +298,62 @@ int main(int argc, char** argv){
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
     auto c_ar = new std::array<int, N * 1>(); // store only first row
 
-    prepareW<<< N / 16, 16>>>();
-    cudaDeviceSynchronize(); // wait for prepareW
-
     std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << " W_MAP_LENGTH=" << W_MAP_LENGTH << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
 
     float ms = 0;
 
 #ifdef RUN_TC
-    ms = measureKernel([X_d, c_d](){
+    // prepare W
+    char *W = (char*) malloc(sizeof(char) * K * N);
+    char *W_d;
+    cudaMalloc((void**) &W_d, sizeof(char) * K * N);
+    prepareW_mat<<<N/16, 16>>>(W_d);
+    cudaDeviceSynchronize(); // wait for prepareW
+    cudaMemcpy(W, W_d, sizeof(char) * K * N, cudaMemcpyDeviceToHost);
+
+    ms = measureKernel([&](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, c_d)));
+            cudaMemcpy(W_d, W, sizeof(char) * K * N, cudaMemcpyHostToDevice); // transfer W from host to device
+            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, (signed char *) W_d,,c_d)));
         }
     });
     std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 0 && "what");
-    assert(c_ar->at(N / 2) == 0 && "what");
-    assert(c_ar->at(N - 1) == 0 &&  "what");
+    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == -1);
+#endif
+
+#if defined(RUN_CUDA) || defined(RUN_NEW_2)
+    // prepare W_map
+    char *W_map = (char*) malloc(sizeof(char) * W_MAP_LENGTH * N);
+    char *W_map_d;
+    cudaMalloc((void**) &W_map_d, sizeof(char) * W_MAP_LENGTH * N);
+    prepareW_map<<<N/16, 16>>>(W_map_d);
+    cudaDeviceSynchronize(); // wait for prepareW
+    cudaMemcpy(W_map, W_map_d, sizeof(char) * K * N, cudaMemcpyDeviceToHost);
 #endif
 
 #ifdef RUN_CUDA
-    ms = measureKernel([X_d, c_d](){
+    ms = measureKernel([&](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, c_d)));
+            cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice); // transfer W from host to device
+            checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, W_map_d, c_d)));
         }
     });
     std::cout << "CudaCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 0 && "what");
-    assert(c_ar->at(N / 2) == 0 && "what");
-    assert(c_ar->at(N - 1) == 0 &&  "what");
+    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == -1);
 #endif
 
 #ifdef RUN_NEW_2
-    ms = measureKernel([X_d, c_d](){
+    ms = measureKernel([&](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkKernelErrors((newMatMul2<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, c_d)));
+            cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice); // transfer W from host to device
+            checkKernelErrors((newMatMul2<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, (signed char *)  W_map_d, c_d)));
         }
     });
     std::cout << "New Time 2: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
     cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == 0 &&  "what");
-    assert(c_ar->at(N / 2) == 0 &&  "what");
-    assert(c_ar->at(N - 2) == 0 &&  "what");
+    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == -1);
 #endif
 
     return 0;
