@@ -74,14 +74,13 @@ __global__ void prepareW(){
 
     for(int row = 0; row < W_MAP_LENGTH; row++){
        int sign = row % 2 == 0 ? 1 : -1;
-       BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = sign * NZ_RATIO;
+       BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = sign * NZ_RATIO; // delta encoding
     }
 
     for(size_t row = 0; row < K; row++){
-        if(row < W_MAP_LENGTH / 2){
-            BT(W_MAJOR) (W_mat, K, N, row, col) = 1;
-        }else if(W_MAP_LENGTH / 2 <= row && row < W_MAP_LENGTH ){
-            BT(W_MAJOR) (W_mat, K, N, row, col) = -1;
+        if(row % NZ_RATIO == 0){
+            int sign = (row / NZ_RATIO) % 2 == 0 ? 1 : -1;
+            BT(W_MAJOR) (W_mat, K, N, row, col) = sign;
         }else{
             BT(W_MAJOR) (W_mat, K, N, row, col) = 0;
         }
