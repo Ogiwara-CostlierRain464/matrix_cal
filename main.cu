@@ -15,6 +15,8 @@
 
 //#define NDEBUG
 
+//#define TRANSFER
+
 //#define RUN_TC
 //#define RUN_CUDA
 #define RUN_NEW_2
@@ -332,9 +334,15 @@ int main(int argc, char** argv){
     cudaDeviceSynchronize(); // wait for prepareW
     checkCudaErrors(cudaMemcpy(W, W_d, sizeof(char) * K * N, cudaMemcpyDeviceToHost));
 
+#ifndef TRANSFER
+    checkCudaErrors(cudaMemcpy(W_d, W, sizeof(char) * K * N, cudaMemcpyHostToDevice)); // transfer W before hand
+#endif
+
     ms = measureKernel([&](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkCudaErrors(cudaMemcpy(W_d, W, sizeof(char) * K * N, cudaMemcpyHostToDevice)); // transfer W from host to device
+#ifdef TRANSFER
+            checkCudaErrors(cudaMemcpy(W_d, W, sizeof(char) * K * N, cudaMemcpyHostToDevice)); // transfer W every time
+#endif
             checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, (signed char *) W_d,c_d)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
@@ -355,9 +363,15 @@ int main(int argc, char** argv){
 #endif
 
 #ifdef RUN_CUDA
+
+#ifndef TRANSFER
+    checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // before hand
+#endif
     ms = measureKernel([&](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // transfer W from host to device
+#ifdef TRANSFER
+            checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // every time
+#endif
             checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, W_map_d, c_d)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
@@ -368,9 +382,15 @@ int main(int argc, char** argv){
 #endif
 
 #ifdef RUN_NEW_2
+
+#ifndef TRANSFER
+    checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // before hand
+#endif
     ms = measureKernel([=](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // transfer W from host to device
+#ifdef TRANSFER
+            checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // every time
+#endif
             checkKernelErrors((newMatMul2<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, (signed char *)  W_map_d, c_d)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
