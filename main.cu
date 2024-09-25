@@ -13,23 +13,24 @@
 
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
+//#define NDEBUG
+
 //#define RUN_TC
-#define RUN_CUDA
-//#define RUN_NEW
+//#define RUN_CUDA
 #define RUN_NEW_2
 
 // X: MxK  W: KxN  C: MxN
-#define D_MODEL 32L
-#define BATCH_SIZE 32L // for real-time inference
+#define D_MODEL 768L
+#define BATCH_SIZE 500000L // for real-time inference
 #define M BATCH_SIZE
 #define K (D_MODEL * 4)
 #define N (D_MODEL)
-#define ITER_NUM 1000
+#define ITER_NUM 100
 
 #define NZ_RATIO 10
 #define W_MAP_LENGTH (K / NZ_RATIO)
 
-#define CALC_N_LENGTH (16L)
+#define CALC_N_LENGTH (768L)
 
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
@@ -42,6 +43,21 @@
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
 #define BT_1(mat, row_dim, col_dim, row, col) mat[col * row_dim + row]
 #define BT(major) CAT(BT_, major)
+
+static const char *_cudaGetErrorEnum(cudaError_t error) {
+    return cudaGetErrorName(error);
+}
+
+template <typename T>
+void check(T result, char const *const func, const char *const file,
+           int const line) {
+    if (result) {
+        fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n", file, line,
+                static_cast<unsigned int>(result), _cudaGetErrorEnum(result), func);
+        exit(EXIT_FAILURE);
+    }
+}
+#define checkCudaErrors(val) check((val), #val, __FILE__, __LINE__)
 
 #define checkKernelErrors(expr)                             \
   do {                                                      \
@@ -87,7 +103,7 @@ __global__ void prepareW_map(char* const W_map){
 
     for(int row = 0; row < W_MAP_LENGTH; row++){
         int sign = row % 2 == 0 ? 1 : -1;
-                BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = sign * NZ_RATIO; // delta encoding
+        BT(W_MAJOR) (W_map, W_MAP_LENGTH , N, row, col) = sign * NZ_RATIO; // delta encoding
     }
 }
 
@@ -228,7 +244,8 @@ __global__ void newMatMul2(
         }
     }
 
-    int idx[16];
+    int idx[8] = {0};
+
 #pragma unroll
     for(unsigned k = 0; k < W_MAP_LENGTH; k++){
 #pragma unroll
@@ -241,9 +258,14 @@ __global__ void newMatMul2(
                 i = b_i_map[f];
                 j = b_j_map[f];
             }
+            assert(0 <= k && k < W_MAP_LENGTH);
+            assert(0 <= blockIdx.x * 16 + j && blockIdx.x * 16 + j < N);
             auto col_idx_delta = BT(W_MAJOR) (W_map, W_MAP_LENGTH, N, k, blockIdx.x * 16 + j);
-            idx[j] += col_idx_delta;
-            M_frag.x[f] = sign(col_idx_delta) * BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, idx[j]); // delta encoding
+            idx[f] += abs(col_idx_delta);
+
+            assert(0 <= blockIdx.y * 16 + i && blockIdx.y * 16 + i < M);
+            assert(0 <= idx[f] && idx[f] < K);
+            M_frag.x[f] = sign(col_idx_delta) * BT(X_MAJOR) (X, M, K, blockIdx.y * 16 + i, idx[f]); // delta encoding
         }
         __syncwarp();
 
@@ -267,7 +289,6 @@ float measureKernel(std::function<void(void)> fn){
 
     fn();
 
-    cudaDeviceSynchronize();
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     float milliseconds = 0;
@@ -296,9 +317,9 @@ int main(int argc, char** argv){
     cudaMemcpy(X_d, X_ar->data(), sizeof(char) * M * K, cudaMemcpyHostToDevice);
 
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
-    auto c_ar = new std::array<int, N * 1>(); // store only first row
+    auto c_ar = new std::array<int, 1 * N>(); // store only first row
 
-    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << " W_MAP_LENGTH=" << W_MAP_LENGTH << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
+    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << ITER_NUM << " W_MAP_LENGTH=" << W_MAP_LENGTH << " CALC_N_LENGTH=" << CALC_N_LENGTH << " NZ_RATIO=" << NZ_RATIO << " X:" << X_MAJOR << " W: " << W_MAJOR << " Y: " << C_MAJOR << std::endl;
 
     float ms = 0;
 
@@ -306,54 +327,57 @@ int main(int argc, char** argv){
     // prepare W
     char *W = (char*) malloc(sizeof(char) * K * N);
     char *W_d;
-    cudaMalloc((void**) &W_d, sizeof(char) * K * N);
+    checkCudaErrors(cudaMalloc((void**) &W_d, sizeof(char) * K * N));
     prepareW_mat<<<N/16, 16>>>(W_d);
     cudaDeviceSynchronize(); // wait for prepareW
-    cudaMemcpy(W, W_d, sizeof(char) * K * N, cudaMemcpyDeviceToHost);
+    checkCudaErrors(cudaMemcpy(W, W_d, sizeof(char) * K * N, cudaMemcpyDeviceToHost));
 
     ms = measureKernel([&](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            cudaMemcpy(W_d, W, sizeof(char) * K * N, cudaMemcpyHostToDevice); // transfer W from host to device
-            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, (signed char *) W_d,,c_d)));
+            checkCudaErrors(cudaMemcpy(W_d, W, sizeof(char) * K * N, cudaMemcpyHostToDevice)); // transfer W from host to device
+            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, (signed char *) W_d,c_d)));
+            checkCudaErrors(cudaDeviceSynchronize());
         }
     });
     std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == -1);
+    checkCudaErrors(cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
+    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == 1);
 #endif
 
 #if defined(RUN_CUDA) || defined(RUN_NEW_2)
     // prepare W_map
     char *W_map = (char*) malloc(sizeof(char) * W_MAP_LENGTH * N);
     char *W_map_d;
-    cudaMalloc((void**) &W_map_d, sizeof(char) * W_MAP_LENGTH * N);
+    checkCudaErrors(cudaMalloc((void**) &W_map_d, sizeof(char) * W_MAP_LENGTH * N));
     prepareW_map<<<N/16, 16>>>(W_map_d);
     cudaDeviceSynchronize(); // wait for prepareW
-    cudaMemcpy(W_map, W_map_d, sizeof(char) * K * N, cudaMemcpyDeviceToHost);
+    checkCudaErrors(cudaMemcpy(W_map, W_map_d, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyDeviceToHost));
 #endif
 
 #ifdef RUN_CUDA
     ms = measureKernel([&](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice); // transfer W from host to device
+            checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // transfer W from host to device
             checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, W_map_d, c_d)));
+            checkCudaErrors(cudaDeviceSynchronize());
         }
     });
     std::cout << "CudaCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == -1);
+    checkCudaErrors(cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
+    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == 1);
 #endif
 
 #ifdef RUN_NEW_2
-    ms = measureKernel([&](){
+    ms = measureKernel([=](){
         for(size_t i = 0; i < ITER_NUM; i++){
-            cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice); // transfer W from host to device
+            checkCudaErrors(cudaMemcpy(W_map_d, W_map, sizeof(char) * W_MAP_LENGTH * N, cudaMemcpyHostToDevice)); // transfer W from host to device
             checkKernelErrors((newMatMul2<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, (signed char *)  W_map_d, c_d)));
+            checkCudaErrors(cudaDeviceSynchronize());
         }
     });
     std::cout << "New Time 2: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
-    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == -1);
+    checkCudaErrors(cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
+    assert(c_ar->at(0) == -1 || c_ar->at(0) == 0 || c_ar->at(0) == 1);
 #endif
 
     return 0;
