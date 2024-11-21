@@ -339,7 +339,6 @@ float measureKernel(std::function<void(void)> fn){
 
     fn();
 
-    cudaDeviceSynchronize();
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     float milliseconds = 0;
@@ -379,10 +378,11 @@ int main(int argc, char** argv){
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
             checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, c_d)));
+            checkCudaErrors(cudaDeviceSynchronize());
         }
     });
     std::cout << "TensorCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+    checkCudaErrors(cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     assert(c_ar->at(0) == 0 && "what");
     assert(c_ar->at(N / 2) == 0 && "what");
     assert(c_ar->at(N - 1) == 0 &&  "what");
@@ -392,10 +392,11 @@ int main(int argc, char** argv){
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
             checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, c_d)));
+            checkCudaErrors(cudaDeviceSynchronize());
         }
     });
     std::cout << "CudaCore Time: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+    checkCudaErrors(cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     assert(c_ar->at(0) == 0 && "what");
     assert(c_ar->at(N / 2) == 0 && "what");
     assert(c_ar->at(N - 1) == 0 &&  "what");
@@ -418,10 +419,11 @@ int main(int argc, char** argv){
     ms = measureKernel([X_d, c_d](){
         for(size_t i = 0; i < ITER_NUM; i++){
             checkKernelErrors((newMatMul2<<< dim3(N / 16, M / 16) , 32>>>((signed char *) X_d, c_d)));
+            checkCudaErrors(cudaDeviceSynchronize());
         }
     });
     std::cout << "New Time 2: " << ms / ((float) ITER_NUM) << "ms" << std::endl;
-    cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost);
+    checkCudaErrors(cudaMemcpy(c_ar->data(), c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     assert(c_ar->at(0) == 0 &&  "what");
     assert(c_ar->at(N / 2) == 0 &&  "what");
     assert(c_ar->at(N - 2) == 0 &&  "what");
