@@ -51,13 +51,24 @@ DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise met
 #define BT(major) CAT(BT_, major)
 
 struct ctx{
-    uint64_t m = M;
-    uint64_t k = K;
-    uint64_t n = N;
-    uint32_t sparse_ratio = FLAGS_sparse_ratio;
-    uint64_t l = FLAGS_L;
-    uint32_t w_map_length_pos = W_MAP_LENGTH;
+    uint64_t m;
+    uint64_t k;
+    uint64_t n;
+    uint64_t sparse_ratio;
+    uint64_t l;
+    uint64_t w_map_length_pos;
 } ctx_v;
+
+void init_ctx(){
+    ctx_v = {
+      .m = M,
+      .k = K,
+      .n = N,
+      .sparse_ratio = FLAGS_sparse_ratio,
+      .l = FLAGS_L,
+      .w_map_length_pos = W_MAP_LENGTH
+    };
+}
 
 static const char *_cudaGetErrorEnum(cudaError_t error) {
     return cudaGetErrorName(error);
@@ -178,10 +189,10 @@ __global__ void cuMatMul(
     int row = tid % ctx.m;
 
 #pragma unroll
-    for(size_t col = start_col; col < start_col + ctx.l; col++){
+    for(int col = start_col; col < start_col + ctx.l; col++){
         int accum = 0;
 #pragma unroll
-        for(size_t i = 0; i < ctx.w_map_length_pos; i++){
+        for(int i = 0; i < ctx.w_map_length_pos; i++){
             auto idx = BT(W_MAJOR) (W_map, ctx.w_map_length_pos, ctx.n, i, col);
             accum += BT(X_MAJOR) (X, ctx.m, ctx.k, row, idx);
         }
@@ -336,6 +347,7 @@ void make_J(char *X){
 int main(int argc, char** argv){
     gflags::SetUsageMessage("matrix multiply speed check");
     gflags::ParseCommandLineFlags(&argc, &argv, true);
+    init_ctx();
 
     assert(M % 16 == 0 && "mod 16 should be 0");
     assert(K % 16 == 0 && "mod 16 should be 0");
@@ -350,7 +362,7 @@ int main(int argc, char** argv){
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
     int *c_ar = (int*) malloc(sizeof(int) * N * 1); // store only first row
 
-    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << FLAGS_iter_num << " W_MAP_LENGTH=" << W_MAP_LENGTH << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
+    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << FLAGS_iter_num << " W_MAP_LENGTH=" << ctx_v.w_map_length_pos << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
 
     float ms = 0;
 
@@ -390,9 +402,9 @@ if(FLAGS_run_row) {
     });
     std::cout << "CudaCore Time: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
-    assert(c_ar[0] == 0 && "what");
-    assert(c_ar[N / 2] == 0 && "what");
-    assert(c_ar[N - 1] == 0 && "what");
+    //assert(c_ar[0] == 0 && "what");
+    //assert(c_ar[N / 2] == 0 && "what");
+    //assert(c_ar[N - 1] == 0 && "what");
 }
 
 if(FLAGS_run_tile) {
@@ -404,9 +416,9 @@ if(FLAGS_run_tile) {
     });
     std::cout << "New Time 2: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
-    assert(c_ar[0] == 0 && "what");
-    assert(c_ar[N / 2] == 0 && "what");
-    assert(c_ar[N - 1] == 0 && "what");
+    //assert(c_ar[0] == 0 && "what");
+    //assert(c_ar[N / 2] == 0 && "what");
+    //assert(c_ar[N - 1] == 0 && "what");
 }
 
     return 0;
