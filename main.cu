@@ -10,6 +10,7 @@
 #include <cassert>
 #include <set>
 #include <type_traits>
+#include <gflags/gflags.h>
 
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
@@ -18,9 +19,11 @@
 //#define RUN_NEW
 #define RUN_NEW_2
 
+DEFINE_uint64(aaa, 100, "test");
+
 // X: MxK  W: KxN  C: MxN
 #define D_MODEL 12288L
-#define BATCH_SIZE 32L // for real-time inference
+#define BATCH_SIZE 32L // for real-time inferencex
 #define M BATCH_SIZE
 #define K (D_MODEL * 4)
 #define N (D_MODEL)
@@ -353,6 +356,8 @@ void make_J(std::array<char, M * K> *X){
 }
 
 int main(int argc, char** argv){
+    gflags::SetUsageMessage("matrix multiply speed check");
+    gflags::ParseCommandLineFlags(&argc, &argv, true);
 
     static_assert(M % 16 == 0 && "mod 16 should be 0");
     static_assert(K % 16 == 0 && "mod 16 should be 0");
