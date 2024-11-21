@@ -46,6 +46,21 @@ __device__ signed char W_mat[K * N];
 __device__ unsigned short W_map[W_MAP_LENGTH * N];
 __device__ unsigned short W_map_negative[W_MAP_LENGTH * N];
 
+static const char *_cudaGetErrorEnum(cudaError_t error) {
+    return cudaGetErrorName(error);
+}
+
+template <typename T>
+void check(T result, char const *const func, const char *const file,
+           int const line) {
+    if (result) {
+        fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n", file, line,
+                static_cast<unsigned int>(result), _cudaGetErrorEnum(result), func);
+        exit(EXIT_FAILURE);
+    }
+}
+#define checkCudaErrors(val) check((val), #val, __FILE__, __LINE__)
+
 #define checkKernelErrors(expr)                             \
   do {                                                      \
     expr;                                                   \
