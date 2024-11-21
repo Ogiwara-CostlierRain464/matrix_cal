@@ -362,7 +362,7 @@ int main(int argc, char** argv){
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
     int *c_ar = (int*) malloc(sizeof(int) * N * 1); // store only first row
 
-    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << FLAGS_iter_num << " W_MAP_LENGTH=" << ctx_v.w_map_length_pos << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
+    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << FLAGS_iter_num << " W_MAP_LENGTH=" << ctx_v.w_map_length_pos << " (" << (100.0 - 100.0 / (float) FLAGS_sparse_ratio) << "% Sparse)" << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
 
     float ms = 0;
 
@@ -378,7 +378,7 @@ if(FLAGS_run_naive_tc) {
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });
-    std::cout << "TensorCore Time: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
+    std::cout << "Naive TC: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     assert(c_ar[0] == -1 || c_ar[0] == 0 || c_ar[0] == 1);
 }
@@ -400,7 +400,7 @@ if(FLAGS_run_row) {
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });
-    std::cout << "CudaCore Time: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
+    std::cout << "Row-wise: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     //assert(c_ar[0] == 0 && "what");
     //assert(c_ar[N / 2] == 0 && "what");
@@ -414,7 +414,7 @@ if(FLAGS_run_tile) {
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });
-    std::cout << "New Time 2: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
+    std::cout << "Tile-wise: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     //assert(c_ar[0] == 0 && "what");
     //assert(c_ar[N / 2] == 0 && "what");
