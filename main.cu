@@ -44,6 +44,8 @@ DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise met
 #define W_MAJOR MAJOR_COL
 #define C_MAJOR MAJOR_COL
 
+#define MAJOR_STR(m) (m == MAJOR_ROW ? "ROW" : "COL")
+
 #define CAT(x, y) x ## y
 
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
@@ -173,6 +175,22 @@ __global__ void tcMatMul(
         nvcuda::wmma::store_matrix_sync(c + (blockIdx.y * 16 * ctx.n + blockIdx.x * 16), c_frag, ctx.n, nvcuda::wmma::mem_row_major);
     }else{
         nvcuda::wmma::store_matrix_sync(c + (blockIdx.x * 16 * ctx.m + blockIdx.y * 16), c_frag, ctx.m, nvcuda::wmma::mem_col_major);
+    }
+}
+
+__global__ void cudaMatMul(
+        const signed char* const X,
+        const signed char* const W_mat,
+        int* const c, ctx ctx){
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int sum = 0;
+    if (row < ctx.m && col < ctx.n) {
+        for (int k = 0; k < ctx.k; k++) {
+            sum += X[row * ctx.k + k] * W_mat[k * ctx.n + col];
+        }
+        C[row * ctx.n + col] = sum;
     }
 }
 
@@ -356,13 +374,25 @@ int main(int argc, char** argv){
 
     char *X_d;
     cudaMalloc((void**) &X_d, sizeof(char) * M * K);
-    char *X_ar = (char*) malloc(sizeof(char) * K * N); make_J(X_ar);
+    char *X_ar = (char*) malloc(sizeof(char) * M * K); make_J(X_ar);
     cudaMemcpy(X_d, X_ar, sizeof(char) * M * K, cudaMemcpyHostToDevice);
 
     int *c_d; cudaMalloc((void**)  &c_d, sizeof(int) * M * N ); cudaMemset(c_d, 0, sizeof(int) * M * N);
     int *c_ar = (int*) malloc(sizeof(int) * N * 1); // store only first row
 
-    std::cout << "Start: " << "M=" << M << " K=" << K << " N=" << N << " ITER=" << FLAGS_iter_num << " W_MAP_LENGTH=" << ctx_v.w_map_length_pos << " (" << (100.0 - 100.0 / (float) FLAGS_sparse_ratio) << "% Sparse)" << " CALC_N_LENGTH=" << CALC_N_LENGTH << std::endl;
+    std::cout
+        << "Start: "
+        << "M=" << M
+        << " K=" << K
+        << " N=" << N
+        << " ITER=" << FLAGS_iter_num
+        << " W_MAP_LENGTH=" << ctx_v.w_map_length_pos
+        << " (" << (100.0 - 100.0 / (float) FLAGS_sparse_ratio) << "% Sparse)"
+        << " CALC_N_LENGTH=" << CALC_N_LENGTH
+        << " X_MAJOR=" << MAJOR_STR(X_MAJOR)
+        << " W_MAJOR=" << MAJOR_STR(W_MAJOR)
+        << " C_MAJOR=" << MAJOR_STR(C_MAJOR)
+        << std::endl;
 
     float ms = 0;
 
