@@ -14,40 +14,28 @@
 
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
-//#define RUN_TC
-
 DEFINE_bool(run_naive_tc, false, "Run naive TC method when true");
 DEFINE_bool(run_row, false, "Run Row-wise method when true");
 DEFINE_bool(run_tile, false, "Run Tile-wise method when true");
-
-// X: MxK  W: KxN  C: MxN
 DEFINE_uint64(d_model, 12288L, "d_model");
 DEFINE_uint64(batch_size, 32L, "batch size");
+DEFINE_uint32(iter_num, 10, "Number of launching kernels");
+DEFINE_uint32(sparse_ratio, 12, "(100 - 100/this)% of sparsity");
+DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise method");
 
+// X: MxK  W: KxN  C: MxN
 #define M FLAGS_batch_size
 #define K (FLAGS_d_model * 4)
 #define N (FLAGS_d_model)
-
-DEFINE_uint32(iter_num, 10, "Number of launching kernels");
-
-DEFINE_uint32(sparse_ratio, 12, "(100 - 100/this)% of sparsity");
-
 #define W_MAP_LENGTH (K / (FLAGS_sparse_ratio * 2))
-
-DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise method");
-
 #define CALC_N_LENGTH (FLAGS_L)
-
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
 #define X_MAJOR MAJOR_COL
 #define W_MAJOR MAJOR_COL
 #define C_MAJOR MAJOR_COL
-
 #define MAJOR_STR(m) (m == MAJOR_ROW ? "ROW" : "COL")
-
 #define CAT(x, y) x ## y
-
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
 #define BT_1(mat, row_dim, col_dim, row, col) mat[col * row_dim + row]
 #define BT(major) CAT(BT_, major)
