@@ -130,10 +130,7 @@ __global__ void prepareW_map(char* const W_map, char* const W_map_negative, ctx 
     }
 }
 
-/**
- * ここはroとcol orderで固定にする良さそう
- */
-__global__ void tcMatMul(
+__global__ void naiveTC(
         const signed char* const X,
         const signed char* const W_mat,
         int* const c, ctx ctx){
@@ -166,7 +163,7 @@ __global__ void tcMatMul(
     }
 }
 
-__global__ void cudaMatMul(
+__global__ void naiveCU(
         const signed char* const X,
         const signed char* const W_mat,
         int* const c, ctx ctx){
@@ -178,11 +175,11 @@ __global__ void cudaMatMul(
         for (int k = 0; k < ctx.k; k++) {
             sum += X[row * ctx.k + k] * W_mat[k * ctx.n + col];
         }
-        C[row * ctx.n + col] = sum;
+        c[row * ctx.n + col] = sum;
     }
 }
 
-__global__ void cuMatMul(
+__global__ void rowWise(
         const char* const X,
         const char* const W_map,
         const char* const W_map_negative,
@@ -244,7 +241,7 @@ __device__ void make_map_b(unsigned tid, unsigned *i_map, unsigned *j_map){
 }
 
 // no use shared memory
-__global__ void newMatMul2(
+__global__ void tileWise(
         const signed char* const X,
         const signed char* const W_map,
         const signed char* const W_map_negative,
@@ -326,7 +323,6 @@ __global__ void newMatMul2(
 }
 
 
-
 float measureKernel(std::function<void(void)> fn){
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -392,7 +388,7 @@ if(FLAGS_run_naive_tc) {
 
     ms = measureKernel([&]() {
         for (size_t i = 0; i < FLAGS_iter_num; i++) {
-            checkKernelErrors((tcMatMul<<< dim3(N / 16, M / 16), 32>>>((signed char *) X_d, (signed char *) W_d, c_d, ctx_v)));
+            checkKernelErrors((naiveTC<<< dim3(N / 16, M / 16), 32>>>((signed char *) X_d, (signed char *) W_d, c_d, ctx_v)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });
@@ -414,7 +410,7 @@ if(FLAGS_run_row || FLAGS_run_tile){
 if(FLAGS_run_row) {
     ms = measureKernel([&]() {
         for (size_t i = 0; i < FLAGS_iter_num; i++) {
-            checkKernelErrors((cuMatMul<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, W_map_d,W_map_negative_d, c_d, ctx_v)));
+            checkKernelErrors((rowWise<<< N * M / (CALC_N_LENGTH * 32), 32 >>>(X_d, W_map_d,W_map_negative_d, c_d, ctx_v)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });
@@ -428,7 +424,7 @@ if(FLAGS_run_row) {
 if(FLAGS_run_tile) {
     ms = measureKernel([&]() {
         for (size_t i = 0; i < FLAGS_iter_num; i++) {
-            checkKernelErrors((newMatMul2<<< dim3(N / 16, M / 16), 32>>>((signed char *) X_d, (signed char *)  W_map_d, (signed char *)  W_map_negative_d,  c_d, ctx_v)));
+            checkKernelErrors((tileWise<<< dim3(N / 16, M / 16), 32>>>((signed char *) X_d, (signed char *)  W_map_d, (signed char *)  W_map_negative_d,  c_d, ctx_v)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });
