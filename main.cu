@@ -15,6 +15,7 @@
 #include "submodule/wmma_extension/include/wmma_extension/wmma_extension.hpp"
 
 DEFINE_bool(run_naive_tc, false, "Run naive TC method when true");
+DEFINE_bool(run_naive_cu, false, "Run naive CU method when true");
 DEFINE_bool(run_row, false, "Run Row-wise method when true");
 DEFINE_bool(run_tile, false, "Run Tile-wise method when true");
 DEFINE_uint64(d_model, 12288L, "d_model");
@@ -32,8 +33,8 @@ DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise met
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
 #define X_MAJOR MAJOR_COL
-#define W_MAJOR MAJOR_COL
-#define C_MAJOR MAJOR_COL
+#define W_MAJOR MAJOR_ROW
+#define C_MAJOR MAJOR_ROW
 #define MAJOR_STR(m) (m == MAJOR_ROW ? "ROW" : "COL")
 #define CAT(x, y) x ## y
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
@@ -167,15 +168,17 @@ __global__ void naiveCU(
         const signed char* const X,
         const signed char* const W_mat,
         int* const c, ctx ctx){
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int start_col = (tid / ctx.m) * ctx.l;
+    int row = tid % ctx.m;
 
-    int sum = 0;
-    if (row < ctx.m && col < ctx.n) {
-        for (int k = 0; k < ctx.k; k++) {
-            sum += X[row * ctx.k + k] * W_mat[k * ctx.n + col];
+    for(int col = start_col; col < start_col + ctx.l; col++){
+        int accum = 0;
+
+        for(int k = 0; k < ctx.k; k++){
+            accum += BT(X_MAJOR)(X, ctx.m, ctx.k, row, k) * BT(W_MAJOR)(W_mat, ctx.k, ctx.n, k, col);
         }
-        c[row * ctx.n + col] = sum;
+        BT(C_MAJOR)(c, ctx.m, ctx.n, row, col) = accum;
     }
 }
 
@@ -380,12 +383,15 @@ int main(int argc, char** argv){
 
     float ms = 0;
 
-if(FLAGS_run_naive_tc) {
-    char *W_d;
+char *W_d;
+
+if(FLAGS_run_naive_tc || FLAGS_run_naive_cu){
     checkCudaErrors(cudaMalloc((void **) &W_d, sizeof(char) * K * N));
     prepareW_mat<<<N / 16, 16>>>(W_d, ctx_v);
     cudaDeviceSynchronize();
+}
 
+if(FLAGS_run_naive_tc) {
     ms = measureKernel([&]() {
         for (size_t i = 0; i < FLAGS_iter_num; i++) {
             checkKernelErrors((naiveTC<<< dim3(N / 16, M / 16), 32>>>((signed char *) X_d, (signed char *) W_d, c_d, ctx_v)));
@@ -393,6 +399,18 @@ if(FLAGS_run_naive_tc) {
         }
     });
     std::cout << "Naive TC: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
+    checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
+    assert(c_ar[0] == -1 || c_ar[0] == 0 || c_ar[0] == 1);
+}
+
+if(FLAGS_run_naive_cu) {
+    ms = measureKernel([&]() {
+        for (size_t i = 0; i < FLAGS_iter_num; i++) {
+            checkKernelErrors((naiveCU<<< N * M / (CALC_N_LENGTH * 32), 32>>>((signed char *) X_d, (signed char *) W_d, c_d, ctx_v)));
+            checkCudaErrors(cudaDeviceSynchronize());
+        }
+    });
+    std::cout << "Naive CU: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     assert(c_ar[0] == -1 || c_ar[0] == 0 || c_ar[0] == 1);
 }
