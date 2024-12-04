@@ -33,8 +33,8 @@ DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise met
 #define MAJOR_ROW 0
 #define MAJOR_COL 1
 #define X_MAJOR MAJOR_COL
-#define W_MAJOR MAJOR_ROW
-#define C_MAJOR MAJOR_ROW
+#define W_MAJOR MAJOR_COL
+#define C_MAJOR MAJOR_COL
 #define MAJOR_STR(m) (m == MAJOR_ROW ? "ROW" : "COL")
 #define CAT(x, y) x ## y
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
@@ -47,7 +47,7 @@ struct ctx{
     uint64_t n;
     uint64_t sparse_ratio;
     uint64_t l;
-    uint64_t w_map_length_pos;
+    uint64_t w_map_length_pos; // S / 2
 } ctx_v;
 
 void init_ctx(){
@@ -112,7 +112,7 @@ __global__ void prepareW_mat(char* const W_mat, ctx ctx){
 /**
  * Prepare both W_mat and W_map before the measurement.
  */
-__global__ void prepareW_map(char* const W_map, char* const W_map_negative, ctx ctx){
+__global__ void prepareW_map(unsigned short* const W_map, unsigned short* const W_map_negative, ctx ctx){
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     if(tid >= ctx.n){
@@ -123,10 +123,10 @@ __global__ void prepareW_map(char* const W_map, char* const W_map_negative, ctx 
     int col = tid;
 
     // todo diff from prepareW_mat
-    for(size_t row = 0; row < ctx.w_map_length_pos; row++){
+    for(unsigned short row = 0; row < ctx.w_map_length_pos; row++){
         BT(W_MAJOR) (W_map, ctx.w_map_length_pos, ctx.n, row, col) = row;
     }
-    for(size_t row = 0; row < ctx.w_map_length_pos; row++){
+    for(unsigned short row = 0; row < ctx.w_map_length_pos; row++){
         BT(W_MAJOR) (W_map_negative ,ctx.w_map_length_pos , ctx.n, row, col) = row + ctx.w_map_length_pos;
     }
 }
@@ -172,9 +172,11 @@ __global__ void naiveCU(
     int start_col = (tid / ctx.m) * ctx.l;
     int row = tid % ctx.m;
 
+#pragma unroll
     for(int col = start_col; col < start_col + ctx.l; col++){
         int accum = 0;
 
+#pragma unroll
         for(int k = 0; k < ctx.k; k++){
             accum += BT(X_MAJOR)(X, ctx.m, ctx.k, row, k) * BT(W_MAJOR)(W_mat, ctx.k, ctx.n, k, col);
         }
@@ -184,8 +186,8 @@ __global__ void naiveCU(
 
 __global__ void rowWise(
         const char* const X,
-        const char* const W_map,
-        const char* const W_map_negative,
+        const unsigned short* const W_map,
+        const unsigned short* const W_map_negative,
         int* const C,
         ctx ctx){
     // CUDA内では2配列として使うことはできない。
@@ -205,7 +207,7 @@ __global__ void rowWise(
         // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
         // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
 #pragma unroll
-        for(size_t i = 0; i < ctx.w_map_length_pos; i++){
+        for(int i = 0; i < ctx.w_map_length_pos; i++){
             auto idx = BT(W_MAJOR) (W_map_negative, ctx.w_map_length_pos, ctx.n, i, col);
             accum += -BT(X_MAJOR) (X, ctx.m, ctx.k, row, idx);
         }
@@ -246,8 +248,8 @@ __device__ void make_map_b(unsigned tid, unsigned *i_map, unsigned *j_map){
 // no use shared memory
 __global__ void tileWise(
         const signed char* const X,
-        const signed char* const W_map,
-        const signed char* const W_map_negative,
+        const unsigned short* const W_map,
+        const unsigned short* const W_map_negative,
         int* const c,
         ctx ctx){
     nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, std::conditional_t<X_MAJOR == MAJOR_ROW, nvcuda::wmma::row_major, nvcuda::wmma::col_major>> M_frag;
@@ -415,12 +417,12 @@ if(FLAGS_run_naive_cu) {
     assert(c_ar[0] == -1 || c_ar[0] == 0 || c_ar[0] == 1);
 }
 
-char *W_map_d;
-char *W_map_negative_d;
+unsigned short *W_map_d;
+unsigned short *W_map_negative_d;
 
 if(FLAGS_run_row || FLAGS_run_tile){
-    checkCudaErrors(cudaMalloc((void**) &W_map_d, sizeof(char) * W_MAP_LENGTH * N));
-    checkCudaErrors(cudaMalloc((void**) &W_map_negative_d, sizeof(char) * W_MAP_LENGTH * N));
+    checkCudaErrors(cudaMalloc((void**) &W_map_d, sizeof(unsigned short) * W_MAP_LENGTH * N));
+    checkCudaErrors(cudaMalloc((void**) &W_map_negative_d, sizeof(unsigned short) * W_MAP_LENGTH * N));
     prepareW_map<<<N/16, 16>>>(W_map_d, W_map_negative_d, ctx_v);
     cudaDeviceSynchronize();
 }
@@ -442,7 +444,7 @@ if(FLAGS_run_row) {
 if(FLAGS_run_tile) {
     ms = measureKernel([&]() {
         for (size_t i = 0; i < FLAGS_iter_num; i++) {
-            checkKernelErrors((tileWise<<< dim3(N / 16, M / 16), 32>>>((signed char *) X_d, (signed char *)  W_map_d, (signed char *)  W_map_negative_d,  c_d, ctx_v)));
+            checkKernelErrors((tileWise<<< dim3(N / 16, M / 16), 32>>>((signed char *) X_d, (unsigned short *)  W_map_d, (unsigned short *)  W_map_negative_d,  c_d, ctx_v)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });

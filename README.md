@@ -1,8 +1,8 @@
 docker run -it -v ./:/work  -d --gpus all --name ogi nvidia/cuda:12.5.0-devel-ubuntu20.04 bash
 
 
-/usr/local/cuda/bin/nvcc -g -G --std=c++17 -gencode=arch=compute_80,code=\"sm_80,compute_80\"  -x cu   /work/matrix_cal/main.cu  -o main -lgflags
-/usr/local/cuda/bin/nvcc --std=c++17 -gencode=arch=compute_80,code=\"sm_80,compute_80\"  -x cu  -Xptxas -O3,-v  /work/matrix_cal/main.cu  -o main -lgflags
+/usr/local/cuda/bin/nvcc -g -G --std=c++17 -gencode=arch=compute_80,code=\"sm_80,compute_80\"  -x cu   /work/matrix_cal/main.cu  -o ccc -lgflags
+/usr/local/cuda/bin/nvcc --std=c++17 -gencode=arch=compute_80,code=\"sm_80,compute_80\"  -x cu  -Xptxas -O3,-v  /work/matrix_cal/main.cu  -o ccc -lgflags
 
 
 
