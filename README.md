@@ -6,7 +6,7 @@ docker run -it -v ./:/work  -d --gpus all --name ogi nvidia/cuda:12.5.0-devel-ub
 
 
 
-nsys profile --gpu-metrics-device 0 ./main
+nsys profile --gpu-metrics-devices 0 --enable nvml_metrics ./ccc -run_tile -d_model=768 -batch_size=32  -sparse_ratio=1 -L=16 -iter_num=1000
 
 cuda-gdb main
 cuda-gdb --args ./rcc-d -run_naive_tc -d_model=768 -batch_size=500000  -sparse_ratio=10  -iter_num=1000

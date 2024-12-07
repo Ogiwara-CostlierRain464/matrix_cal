@@ -1,3 +1,6 @@
 [submodule "submodule/wmma_extension"]
 	path = submodule/wmma_extension
 	url = https://github.com/wmmae/wmma_extension.git
+[submodule "submodule/nvml-power"]
+	path = submodule/nvml-power
+	url = git@github.com:kajalv/nvml-power.git
