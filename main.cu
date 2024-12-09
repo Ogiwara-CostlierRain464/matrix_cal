@@ -17,6 +17,7 @@
 
 DEFINE_bool(run_naive_tc, false, "Run naive TC method when true");
 DEFINE_bool(run_naive_cu, false, "Run naive CU method when true");
+DEFINE_bool(run_sparse_cu, false, "Run sparse CU method (CSR-format) when true");
 DEFINE_bool(run_row, false, "Run Row-wise method when true");
 DEFINE_bool(run_tile, false, "Run Tile-wise method when true");
 DEFINE_uint64(d_model, 12288L, "d_model");
@@ -328,6 +329,28 @@ __global__ void prepareW_map(unsigned short* const W_map, unsigned short* const 
     }
 }
 
+__global__ void prepareW_CSC(int8_t* values, int* row_indices, int* col_offsets, ctx ctx) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (tid >= ctx.n) {
+        return;
+    }
+
+    int col = tid;
+
+    col_offsets[0] = 0;
+    col_offsets[col+1] = ctx.w_map_length_pos * 2 * (col+1);
+    for(int i = 0; i < ctx.w_map_length_pos * 2; i++){
+        row_indices[ctx.w_map_length_pos * 2 * col + i] = i;
+    }
+    for(int i = 0; i < ctx.w_map_length_pos; i++){
+        row_indices[ctx.w_map_length_pos * 2 * col + i] = 1;
+    }
+    for(int i = ctx.w_map_length_pos; i < ctx.w_map_length_pos * 2; i++){
+        row_indices[ctx.w_map_length_pos * 2 * col + i] = -1;
+    }
+}
+
 __global__ void naiveTC(
         const signed char* const X,
         const signed char* const W_mat,
@@ -376,6 +399,28 @@ __global__ void naiveCU(
 #pragma unroll
         for(int k = 0; k < ctx.k; k++){
             accum += BT(X_MAJOR)(X, ctx.m, ctx.k, row, k) * BT(W_MAJOR)(W_mat, ctx.k, ctx.n, k, col);
+        }
+        BT(C_MAJOR)(c, ctx.m, ctx.n, row, col) = accum;
+    }
+}
+
+__global__ void sparseCU( // with CSC format because CSC is suitable for W
+        const signed char* const X,
+        const int8_t* values,
+        const int* row_indices,
+        const int* col_offsets,
+        int* const c, ctx ctx){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int start_col = (tid / ctx.m) * ctx.l;
+    int row = tid % ctx.m;
+
+#pragma unroll
+    for(int col = start_col; col < start_col + ctx.l; col++){
+        int accum = 0;
+
+        for(int j = col_offsets[col]; j < col_offsets[col + 1]; ++j){
+            int w_row = row_indices[j];
+            accum += BT(X_MAJOR)(X, ctx.m, ctx.k, row, w_row) * values[j];
         }
         BT(C_MAJOR)(c, ctx.m, ctx.n, row, col) = accum;
     }
@@ -612,6 +657,28 @@ if(FLAGS_run_naive_cu) {
         }
     });
     std::cout << "Naive CU: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
+    checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
+    assert(c_ar[0] == -1 || c_ar[0] == 0 || c_ar[0] == 1);
+}
+
+if(FLAGS_run_sparse_cu){
+    int8_t* values_d; // nnz
+    int* row_indices_d; // nnz
+    int* col_offsets_d; // column (of W) + 1
+
+    checkCudaErrors(cudaMalloc((void **) &values_d, sizeof(char) * W_MAP_LENGTH * 2 * N));
+    checkCudaErrors(cudaMalloc((void **) &row_indices_d, sizeof(int) * W_MAP_LENGTH * 2 * N));
+    checkCudaErrors(cudaMalloc((void **) &col_offsets_d, sizeof(int) * (K+1)));
+    prepareW_CSC<<<N / 16, 16>>>(values_d, row_indices_d, col_offsets_d);
+    cudaDeviceSynchronize();
+
+    ms = measureKernel([&]() {
+        for (size_t i = 0; i < FLAGS_iter_num; i++) {
+            checkKernelErrors((sparseCU<<< N * M / (CALC_N_LENGTH * 32), 32>>>((signed char *) X_d, values_d , row_indices_d, col_offsets_d, c_d ctx_v)));
+            checkCudaErrors(cudaDeviceSynchronize());
+        }
+    });
+    std::cout << "Sparse CU: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     assert(c_ar[0] == -1 || c_ar[0] == 0 || c_ar[0] == 1);
 }
