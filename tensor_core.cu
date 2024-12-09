@@ -6,50 +6,36 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
-__global__ void matMul(const half* const a_ptr,
-                       const half* const b_ptr,
-                       half* const c_ptr){
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::col_major> a_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::col_major> b_frag;
-    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, half> c_frag;
 
-    for(size_t _i = 0; _i < 1'000'000'0; _i++){
-        nvcuda::wmma::fill_fragment(c_frag, __float2half(.0f));
+#define M 160
+#define K 160
+#define N 160
 
-        nvcuda::wmma::load_matrix_sync(a_frag, a_ptr, 16);
-        nvcuda::wmma::load_matrix_sync(b_frag, b_ptr, 16);
+__global__ void naiveTC(
+        const signed char* const X,
+        const signed char* const W_mat){
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, signed char, nvcuda::wmma::col_major> X_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, signed char, nvcuda::wmma::col_major> W_frag;
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, int> c_frag;
+    nvcuda::wmma::fill_fragment(c_frag, 0);
 
-        nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
-
-        nvcuda::wmma::store_matrix_sync(c_ptr, c_frag, 16, nvcuda::wmma::mem_col_major);
+    for(size_t k = 0; k < K; k += 16){
+        nvcuda::wmma::load_matrix_sync(X_frag, X + (k * M + blockIdx.y * 16), M);
+        nvcuda::wmma::load_matrix_sync(W_frag, W_mat + (k + blockIdx.x * 16 * K), K);
+        nvcuda::wmma::mma_sync(c_frag, X_frag, W_frag, c_frag);
     }
+    nvcuda::wmma::store_matrix_sync(c + (blockIdx.x * 16 * M + blockIdx.y * 16), c_frag, M, nvcuda::wmma::mem_col_major);
 }
 
+
 int main(int argc, char** argv){
-    half *a;
-    cudaMalloc((void**)  &a, 16 * 16 );
-    half *b;
-    cudaMalloc((void**)  &b, 16 * 16 );
-    half *c;
-    cudaMalloc((void**)  &c, 16 * 16 );
+    int8_t *A_d;
+    int8_t *B_d;
+    int *C_d;
+    cudaMalloc((void**) &A_d, 160 * 160 * sizeof(int8_t));
+    cudaMalloc((void**) &B_d, 160 * 160 * sizeof(int8_t));
+    cudaMalloc((void**) &C_d, 160 * 160 * sizeof(int));
 
-    dim3 grid(1);
-    dim3 block(1);
-
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    cudaEventRecord(start);
-
-    matMul<<<grid, block>>>(a, b, c);
-
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-
-    float milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    std::cout << "Time: " << milliseconds << " ms" << std::endl;
-
-    return 0;
+    simpleFusedMultiplyAdd<<<dim3(N / 16, M / 16), 32>>>(A_d, B_d, C_d);
+    cudaDeviceSynchronize();
 }
