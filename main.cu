@@ -42,6 +42,7 @@ DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise met
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
 #define BT_1(mat, row_dim, col_dim, row, col) mat[col * row_dim + row]
 #define BT(major) CAT(BT_, major)
+#define POWER
 
 void nvmlAPIRun();
 void nvmlAPIEnd();
@@ -344,10 +345,10 @@ __global__ void prepareW_CSC(int8_t* values, int* row_indices, int* col_offsets,
         row_indices[ctx.w_map_length_pos * 2 * col + i] = i;
     }
     for(int i = 0; i < ctx.w_map_length_pos; i++){
-        row_indices[ctx.w_map_length_pos * 2 * col + i] = 1;
+        values[ctx.w_map_length_pos * 2 * col + i] = 1;
     }
     for(int i = ctx.w_map_length_pos; i < ctx.w_map_length_pos * 2; i++){
-        row_indices[ctx.w_map_length_pos * 2 * col + i] = -1;
+        values[ctx.w_map_length_pos * 2 * col + i] = -1;
     }
 }
 
@@ -404,7 +405,7 @@ __global__ void naiveCU(
     }
 }
 
-__global__ void sparseCU( // with CSC format because CSC is suitable for W
+__global__ void sparseCU( // with CSC format because CSC is suitable for X . W
         const signed char* const X,
         const int8_t* values,
         const int* row_indices,
@@ -576,9 +577,13 @@ float measureKernel(std::function<void(void)> fn){
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
-    //nvmlAPIRun();
+#ifdef POWER
+    nvmlAPIRun();
     fn();
-    //nvmlAPIEnd();
+    nvmlAPIEnd();
+#else
+    fn();
+#endif
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -669,12 +674,12 @@ if(FLAGS_run_sparse_cu){
     checkCudaErrors(cudaMalloc((void **) &values_d, sizeof(char) * W_MAP_LENGTH * 2 * N));
     checkCudaErrors(cudaMalloc((void **) &row_indices_d, sizeof(int) * W_MAP_LENGTH * 2 * N));
     checkCudaErrors(cudaMalloc((void **) &col_offsets_d, sizeof(int) * (K+1)));
-    prepareW_CSC<<<N / 16, 16>>>(values_d, row_indices_d, col_offsets_d);
+    prepareW_CSC<<<N / 16, 16>>>(values_d, row_indices_d, col_offsets_d, ctx_v);
     cudaDeviceSynchronize();
 
     ms = measureKernel([&]() {
         for (size_t i = 0; i < FLAGS_iter_num; i++) {
-            checkKernelErrors((sparseCU<<< N * M / (CALC_N_LENGTH * 32), 32>>>((signed char *) X_d, values_d , row_indices_d, col_offsets_d, c_d ctx_v)));
+            checkKernelErrors((sparseCU<<< N * M / (CALC_N_LENGTH * 32), 32>>>((signed char *) X_d, values_d, row_indices_d, col_offsets_d, c_d, ctx_v)));
             checkCudaErrors(cudaDeviceSynchronize());
         }
     });
