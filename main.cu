@@ -19,6 +19,7 @@ DEFINE_bool(run_naive_tc, false, "Run naive TC method when true");
 DEFINE_bool(run_naive_cu, false, "Run naive CU method when true");
 DEFINE_bool(run_sparse_cu, false, "Run sparse CU method (CSR-format) when true");
 DEFINE_bool(run_row, false, "Run Row-wise method when true");
+DEFINE_bool(run_row_simd, false, "Run Row-wise SIMD method when true");
 DEFINE_bool(run_tile, false, "Run Tile-wise method when true");
 DEFINE_uint64(d_model, 12288L, "d_model");
 DEFINE_uint64(batch_size, 32L, "batch size");
@@ -42,7 +43,7 @@ DEFINE_uint64(L, 16L, "Number of how each CUDA thread calculates in row-wise met
 #define BT_0(mat, row_dim, col_dim, row, col) mat[row * col_dim + col]
 #define BT_1(mat, row_dim, col_dim, row, col) mat[col * row_dim + row]
 #define BT(major) CAT(BT_, major)
-#define POWER
+//#define POWER
 
 void nvmlAPIRun();
 void nvmlAPIEnd();
@@ -458,6 +459,50 @@ __global__ void rowWise(
     }
 }
 
+__global__ void rowWiseSIMD(
+        const char* const X,
+        const unsigned short* const W_map,
+        const unsigned short* const W_map_negative,
+        int* const C,
+        ctx ctx){
+    assert(ctx.l % 2 == 0 && "L should be multiple of 2");
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int start_col = (tid / ctx.m) * ctx.l;
+    int row = tid % ctx.m;
+
+#pragma unroll
+    for(int col = start_col; col < start_col + ctx.l; col+=2){
+        unsigned int accum = 0;
+#pragma unroll
+        for(int i = 0; i < ctx.w_map_length_pos; i++){
+            short idx_a = BT(W_MAJOR) (W_map, ctx.w_map_length_pos, ctx.n, i, col);
+            short idx_b = BT(W_MAJOR) (W_map, ctx.w_map_length_pos, ctx.n, i, col+1);
+
+            short v_a = (short) BT(X_MAJOR) (X, ctx.m, ctx.k, row, idx_a);
+            short v_b = (short) BT(X_MAJOR) (X, ctx.m, ctx.k, row, idx_b);
+
+            unsigned int tmp = v_a << 16 | v_b;
+            accum = __vaddss2(tmp, accum);
+        }
+        // indexを負の値にする方法では、なぜかパフォーマンスが劣化した
+        // このため、別のmapとし作成することにより、パフォーマンスの劣化を抑える。
+#pragma unroll
+        for(int i = 0; i < ctx.w_map_length_pos; i++){
+            short idx_a = BT(W_MAJOR) (W_map_negative, ctx.w_map_length_pos, ctx.n, i, col);
+            short idx_b = BT(W_MAJOR) (W_map_negative, ctx.w_map_length_pos, ctx.n, i, col+1);
+
+            short v_a = (short) -BT(X_MAJOR) (X, ctx.m, ctx.k, row, idx_a);
+            short v_b = (short) -BT(X_MAJOR) (X, ctx.m, ctx.k, row, idx_b);
+
+            unsigned int tmp = v_a << 16 | v_b;
+            accum = __vaddss2(tmp, accum);
+        }
+        BT(C_MAJOR) (C, ctx.m, ctx.n, row, col) = accum >> 16;
+        BT(C_MAJOR) (C, ctx.m, ctx.n, row, col+1) = ((accum << 16 ) >> 16);
+    }
+}
+
 // assert uint8_t, col major, sm80
 __device__ void make_map_a(unsigned tid, unsigned *i_map, unsigned *j_map){
     auto div_4 = tid / 4;
@@ -632,6 +677,10 @@ int main(int argc, char** argv){
         << " C_MAJOR=" << MAJOR_STR(C_MAJOR)
         << std::endl;
 
+#ifdef POWER
+    std::cout << "!!!!!!!!!! POWER MEASURE ON !!!!!!!!!!!!!" << std::endl;
+#endif
+
     float ms = 0;
 
 char *W_d;
@@ -691,7 +740,7 @@ if(FLAGS_run_sparse_cu){
 unsigned short *W_map_d;
 unsigned short *W_map_negative_d;
 
-if(FLAGS_run_row || FLAGS_run_tile){
+if(FLAGS_run_row || FLAGS_run_tile || FLAGS_run_row_simd){
     checkCudaErrors(cudaMalloc((void**) &W_map_d, sizeof(unsigned short) * W_MAP_LENGTH * N));
     checkCudaErrors(cudaMalloc((void**) &W_map_negative_d, sizeof(unsigned short) * W_MAP_LENGTH * N));
     prepareW_map<<<N/16, 16>>>(W_map_d, W_map_negative_d, ctx_v);
@@ -720,6 +769,20 @@ if(FLAGS_run_tile) {
         }
     });
     std::cout << "Tile-wise: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
+    checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
+    //assert(c_ar[0] == 0 && "what");
+    //assert(c_ar[N / 2] == 0 && "what");
+    //assert(c_ar[N - 1] == 0 && "what");
+}
+
+if(FLAGS_run_row_simd){
+    ms = measureKernel([&]() {
+        for (size_t i = 0; i < FLAGS_iter_num; i++) {
+            checkKernelErrors((rowWiseSIMD<<< N * M / (CALC_N_LENGTH * 32) / 2, 32 >>>(X_d, W_map_d,W_map_negative_d, c_d, ctx_v)));
+            checkCudaErrors(cudaDeviceSynchronize());
+        }
+    });
+    std::cout << "Row-wise SIMD: " << ms / ((float) FLAGS_iter_num) << "ms" << std::endl;
     checkCudaErrors(cudaMemcpy(c_ar, c_d, N * sizeof(int), cudaMemcpyDeviceToHost));
     //assert(c_ar[0] == 0 && "what");
     //assert(c_ar[N / 2] == 0 && "what");
